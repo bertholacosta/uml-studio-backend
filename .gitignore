@@ -1,0 +1,41 @@
+# ---------- Dependencias ----------
+node_modules/
+
+# ---------- Compilación ----------
+dist/
+build/
+*.tsbuildinfo
+
+# ---------- Variables de entorno ----------
+.env
+.env.*
+!.env.example
+
+# ---------- Pruebas ----------
+coverage/
+.nyc_output/
+
+# ---------- Registros ----------
+logs/
+*.log
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# ---------- Temporales ----------
+.tmp/
+.temp/
+*.pid
+
+# ---------- Editores ----------
+.vscode/
+.idea/
+*.sublime-workspace
+
+# ---------- Sistema operativo ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- Herramientas de IA ----------
+.claude/
+CLAUDE.md
+AGENTS.md

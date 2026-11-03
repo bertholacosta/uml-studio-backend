@@ -1,0 +1,50 @@
+import 'package:equatable/equatable.dart';
+import '../../domain/entities/{{snake}}_entity.dart';
+
+abstract class {{className}}Event extends Equatable {
+  const {{className}}Event();
+
+  @override
+  List<Object?> get props => [];
+}
+
+class Load{{classPlural}}Event extends {{className}}Event {
+  const Load{{classPlural}}Event();
+}
+
+class Get{{className}}ByIdEvent extends {{className}}Event {
+  final String id;
+
+  const Get{{className}}ByIdEvent(this.id);
+
+  @override
+  List<Object?> get props => [id];
+}
+
+class Create{{className}}Event extends {{className}}Event {
+  final {{className}}Entity entity;
+
+  const Create{{className}}Event(this.entity);
+
+  @override
+  List<Object?> get props => [entity];
+}
+
+class Update{{className}}Event extends {{className}}Event {
+  final String id;
+  final {{className}}Entity entity;
+
+  const Update{{className}}Event({required this.id, required this.entity});
+
+  @override
+  List<Object?> get props => [id, entity];
+}
+
+class Delete{{className}}Event extends {{className}}Event {
+  final String id;
+
+  const Delete{{className}}Event(this.id);
+
+  @override
+  List<Object?> get props => [id];
+}

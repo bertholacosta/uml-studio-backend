@@ -1,0 +1,128 @@
+import 'dart:convert';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:equatable/equatable.dart';
+import '../../../../core/services/token_storage_service.dart';
+import '../../../{{userSnake}}/domain/entities/{{userSnake}}_entity.dart';
+import '../../../{{userSnake}}/data/models/{{userSnake}}_model.dart';
+import '../../domain/usecases/auth_usecases.dart';
+
+// ==================== EVENTS ====================
+abstract class AuthEvent extends Equatable {
+  const AuthEvent();
+  @override
+  List<Object?> get props => [];
+}
+
+class AuthCheckRequested extends AuthEvent {}
+
+class LoginSubmitted extends AuthEvent {
+  final String email;
+  final String password;
+
+  const LoginSubmitted({required this.email, required this.password});
+
+  @override
+  List<Object?> get props => [email, password];
+}
+
+class RegisterSubmitted extends AuthEvent {
+  final String email;
+  final String password;
+  final Map<String, dynamic> extra;
+
+  const RegisterSubmitted({
+    required this.email,
+    required this.password,
+    this.extra = const {},
+  });
+
+  @override
+  List<Object?> get props => [email, password, extra];
+}
+
+class LogoutSubmitted extends AuthEvent {}
+
+// ==================== STATES ====================
+abstract class AuthState extends Equatable {
+  const AuthState();
+  @override
+  List<Object?> get props => [];
+}
+
+class AuthInitial extends AuthState {}
+
+class AuthLoading extends AuthState {}
+
+class Authenticated extends AuthState {
+  final {{className}}Entity? user;
+  const Authenticated({this.user});
+
+  @override
+  List<Object?> get props => [user];
+}
+
+class Unauthenticated extends AuthState {}
+
+class AuthFailureState extends AuthState {
+  final String message;
+  const AuthFailureState({required this.message});
+
+  @override
+  List<Object?> get props => [message];
+}
+
+// ==================== BLOC ====================
+class AuthBloc extends Bloc<AuthEvent, AuthState> {
+  final LoginUseCase loginUseCase;
+  final RegisterUseCase registerUseCase;
+  final LogoutUseCase logoutUseCase;
+  final CheckAuthUseCase checkAuthUseCase;
+
+  AuthBloc({
+    required this.loginUseCase,
+    required this.registerUseCase,
+    required this.logoutUseCase,
+    required this.checkAuthUseCase,
+  }) : super(AuthInitial()) {
+    on<AuthCheckRequested>((event, emit) async {
+      final isAuth = await checkAuthUseCase();
+      if (isAuth) {
+        {{className}}Entity? user;
+        final rawUser = await TokenStorageService.getUserData();
+        if (rawUser != null && rawUser.isNotEmpty) {
+          try {
+            final json = jsonDecode(rawUser) as Map<String, dynamic>;
+            user = {{className}}Model.fromJson(json);
+          } catch (_) {}
+        }
+        emit(Authenticated(user: user));
+      } else {
+        emit(Unauthenticated());
+      }
+    });
+
+    on<LoginSubmitted>((event, emit) async {
+      emit(AuthLoading());
+      final result = await loginUseCase(event.email, event.password);
+      result.fold(
+        (failure) => emit(AuthFailureState(message: failure.message)),
+        (user) => emit(Authenticated(user: user)),
+      );
+    });
+
+    on<RegisterSubmitted>((event, emit) async {
+      emit(AuthLoading());
+      final result = await registerUseCase(event.email, event.password, event.extra);
+      result.fold(
+        (failure) => emit(AuthFailureState(message: failure.message)),
+        (user) => emit(Authenticated(user: user)),
+      );
+    });
+
+    on<LogoutSubmitted>((event, emit) async {
+      emit(AuthLoading());
+      await logoutUseCase();
+      emit(Unauthenticated());
+    });
+  }
+}

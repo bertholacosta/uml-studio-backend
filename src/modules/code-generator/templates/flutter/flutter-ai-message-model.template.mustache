@@ -1,0 +1,45 @@
+enum MessageSender { user, bot }
+
+class ChatMessage {
+  final String id;
+  final String text;
+  final MessageSender sender;
+  final DateTime timestamp;
+  final bool isError;
+  final String? actionType; // 'create', 'list', 'delete', 'chat'
+  final String? entityName;
+  final Map<String, dynamic>? actionData;
+
+  const ChatMessage({
+    required this.id,
+    required this.text,
+    required this.sender,
+    required this.timestamp,
+    this.isError = false,
+    this.actionType,
+    this.entityName,
+    this.actionData,
+  });
+
+  ChatMessage copyWith({
+    String? id,
+    String? text,
+    MessageSender? sender,
+    DateTime? timestamp,
+    bool? isError,
+    String? actionType,
+    String? entityName,
+    Map<String, dynamic>? actionData,
+  }) {
+    return ChatMessage(
+      id: id ?? this.id,
+      text: text ?? this.text,
+      sender: sender ?? this.sender,
+      timestamp: timestamp ?? this.timestamp,
+      isError: isError ?? this.isError,
+      actionType: actionType ?? this.actionType,
+      entityName: entityName ?? this.entityName,
+      actionData: actionData ?? this.actionData,
+    );
+  }
+}

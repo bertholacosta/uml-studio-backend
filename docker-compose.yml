@@ -1,0 +1,54 @@
+# Backend + PostgreSQL + MongoDB para probar el despliegue en local:
+#   docker compose up --build
+# Requiere un .env con al menos JWT_SECRET (y GEMINI_API_KEY si las imágenes van a Gemini).
+# El modelo de Trazo corre en Ollama fuera de Docker (en este equipo o en otro servidor).
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: uml_studio_db
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # El esquema se crea en el primer arranque del contenedor
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d uml_studio_db"]
+      interval: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:8
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: .
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://postgres:postgres@db:5432/uml_studio_db
+      DB_SYNCHRONIZE: "false"
+      MONGODB_URI: mongodb://mongo:27017/uml_studio_ai
+      # Ollama del equipo anfitrión; cámbialo por la URL de tu servidor o de Colab
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:4200}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+
+volumes:
+  db-data:
+  mongo-data:

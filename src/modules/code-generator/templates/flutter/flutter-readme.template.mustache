@@ -1,0 +1,91 @@
+# 📱 {{projectName}} (Flutter Mobile App)
+
+Aplicación móvil desarrollada en **Flutter** con arquitectura limpia (**Clean Architecture**), patrón de gestión de estado **BLoC** (`flutter_bloc`), cliente HTTP **Dio**, inyección de dependencias con **GetIt** y **Asistente de IA Local Híbrido** (Ollama + On-Device NLP).
+
+---
+
+## 🤖 Asistente de IA Local Integrado
+
+La aplicación incluye un **Bot conversacional inteligente** que permite interactuar con el backend mediante lenguaje natural sin necesidad de llenar formularios manualmente.
+
+### 🌟 Capacidades del Asistente:
+1. **Registro / Creación Rápida:**
+   - `"Registra un usuario con el nombre juan, email juan@gmail.com, password jose"`
+   - `"Crea un producto con nombre Laptop, precio 1200.50"`
+2. **Consultas y Listados:**
+   - `"Listar usuarios"`
+   - `"Mostrar productos"`
+3. **Eliminación por ID:**
+   - `"Eliminar usuario con id 123"`
+
+### ⚡ Modo Híbrido (Ollama + On-Device NLP):
+* **Nivel 1 (Ollama Local):** Si tienes [Ollama](https://ollama.com) ejecutándose localmente con modelos como `llama3.2`, `qwen2.5` o `mistral` en `http://localhost:11434` (o `http://10.0.2.2:11434` en emulador Android), el bot utiliza el LLM para estructurar los datos. Puedes cambiar la URL y modelo en el botón ⚙️ de la pantalla de chat.
+* **Nivel 2 (Motor Local On-Device Fallback):** Si Ollama no está disponible o no hay red externa, se activa de forma transparente el **procesador semántico NLP nativo** directamente en tu dispositivo, interpretando acciones, entidades y campos al instante.
+
+---
+
+## 🏗 Estructura del Proyecto (Clean Architecture)
+
+```text
+lib/
+├── core/                         # Núcleo reutilizable
+│   ├── constants/api_constants.dart
+│   ├── errors/exceptions.dart & failures.dart
+│   ├── network/api_client.dart   # Cliente Dio con interceptores
+│   └── theme/app_theme.dart      # Tema Material 3
+│
+├── features/                     # Módulos por entidad del diagrama UML
+│   ├── ai_assistant/             # 🤖 Bot de IA Local (BLoC + Service + Chat UI)
+│   │   ├── data/ (models, services)
+│   │   └── presentation/ (bloc, pages)
+{{#featureTrees}}
+│   ├── {{snake}}/
+│   │   ├── data/ (datasources, models, repositories)
+│   │   ├── domain/ (entities, repositories, usecases)
+│   │   └── presentation/ (bloc, pages, widgets)
+{{/featureTrees}}
+│
+├── injection_container.dart      # Configuración de dependencias (GetIt)
+└── main.dart                     # Punto de entrada y MultiBlocProvider
+```
+
+---
+
+## 🔌 Conexión con el Backend Spring Boot (Puerto {{port}})
+
+### 📲 Opción 1: Dispositivo Físico Android por Cable USB (Recomendado)
+Conecta tu teléfono Android a la PC por cable USB con la **Depuración USB** activada y ejecuta en tu terminal:
+
+```bash
+adb reverse tcp:{{port}} tcp:{{port}}
+```
+
+Esto reenviará las peticiones de `http://localhost:{{port}}` en tu teléfono directamente a tu PC.
+
+### 💻 Opción 2: Emulador de Android Studio
+El emulador de Android mapea el localhost de tu PC a la IP especial: `http://10.0.2.2:{{port}}/api/v1`.
+
+---
+
+## 🚀 Ejecución de la Aplicación
+
+1. Instalar las dependencias de Flutter:
+```bash
+flutter pub get
+```
+
+2. Ejecutar la aplicación en tu dispositivo o emulador:
+```bash
+flutter run
+```
+
+---
+
+## ✨ Módulos y Pantallas Generadas
+
+| Módulo / Entidad | Capas Clean Architecture | Pantalla Principal |
+| :--- | :--- | :--- |
+| **🤖 Asistente IA** | Data, Presentation (BLoC) | `AiAssistantPage` |
+{{#crudModules}}
+| **{{className}}** | Data, Domain, Presentation (BLoC) | `{{className}}ListPage` & `{{className}}FormPage` |
+{{/crudModules}}

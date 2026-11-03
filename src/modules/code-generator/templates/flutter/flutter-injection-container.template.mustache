@@ -1,0 +1,77 @@
+import 'package:get_it/get_it.dart';
+import 'core/network/api_client.dart';
+import 'core/services/token_storage_service.dart';
+{{#hasAuth}}
+import 'features/auth/data/datasources/auth_remote_datasource.dart';
+import 'features/auth/data/repositories/auth_repository_impl.dart';
+import 'features/auth/domain/repositories/auth_repository.dart';
+import 'features/auth/domain/usecases/auth_usecases.dart';
+import 'features/auth/presentation/bloc/auth_bloc.dart';
+{{/hasAuth}}
+{{#features}}
+import 'features/{{snake}}/data/datasources/{{snake}}_remote_datasource.dart';
+import 'features/{{snake}}/data/repositories/{{snake}}_repository_impl.dart';
+import 'features/{{snake}}/domain/repositories/{{snake}}_repository.dart';
+import 'features/{{snake}}/domain/usecases/get_{{snakePlural}}_usecase.dart';
+import 'features/{{snake}}/domain/usecases/get_{{snake}}_by_id_usecase.dart';
+import 'features/{{snake}}/domain/usecases/create_{{snake}}_usecase.dart';
+import 'features/{{snake}}/domain/usecases/update_{{snake}}_usecase.dart';
+import 'features/{{snake}}/domain/usecases/delete_{{snake}}_usecase.dart';
+import 'features/{{snake}}/presentation/bloc/{{snake}}_bloc.dart';
+{{/features}}
+import 'features/ai_assistant/data/services/local_llm_service.dart';
+import 'features/ai_assistant/data/services/model_downloader_service.dart';
+import 'features/ai_assistant/data/services/ai_assistant_service.dart';
+import 'features/ai_assistant/presentation/bloc/ai_assistant_bloc.dart';
+
+final sl = GetIt.instance;
+
+Future<void> init() async {
+  // Core Network & Storage
+  await TokenStorageService.init();
+  sl.registerLazySingleton<ApiClient>(() => ApiClient());
+
+{{#hasAuth}}
+  // ================= Feature: Authentication (JWT) =================
+  sl.registerFactory(() => AuthBloc(
+    loginUseCase: sl(),
+    registerUseCase: sl(),
+    logoutUseCase: sl(),
+    checkAuthUseCase: sl(),
+  ));
+  sl.registerLazySingleton(() => LoginUseCase(repository: sl()));
+  sl.registerLazySingleton(() => RegisterUseCase(repository: sl()));
+  sl.registerLazySingleton(() => LogoutUseCase(repository: sl()));
+  sl.registerLazySingleton(() => CheckAuthUseCase(repository: sl()));
+  sl.registerLazySingleton<AuthRepository>(() => AuthRepositoryImpl(remoteDataSource: sl()));
+  sl.registerLazySingleton<AuthRemoteDataSource>(() => AuthRemoteDataSourceImpl(apiClient: sl()));
+
+{{/hasAuth}}
+{{#features}}
+  // ================= Feature: {{className}} =================
+  sl.registerFactory(() => {{className}}Bloc(
+    get{{classPlural}}UseCase: sl(),
+    get{{className}}ByIdUseCase: sl(),
+    create{{className}}UseCase: sl(),
+    update{{className}}UseCase: sl(),
+    delete{{className}}UseCase: sl(),
+  ));
+  sl.registerLazySingleton(() => Get{{classPlural}}UseCase(repository: sl()));
+  sl.registerLazySingleton(() => Get{{className}}ByIdUseCase(repository: sl()));
+  sl.registerLazySingleton(() => Create{{className}}UseCase(repository: sl()));
+  sl.registerLazySingleton(() => Update{{className}}UseCase(repository: sl()));
+  sl.registerLazySingleton(() => Delete{{className}}UseCase(repository: sl()));
+  sl.registerLazySingleton<{{className}}Repository>(() => {{className}}RepositoryImpl(remoteDataSource: sl()));
+  sl.registerLazySingleton<{{className}}RemoteDataSource>(() => {{className}}RemoteDataSourceImpl(apiClient: sl()));
+
+{{/features}}
+  // ================= Feature: AI Assistant (Qwen2.5 On-Device + Backend REST) =================
+  sl.registerLazySingleton(() => LocalLlmService());
+  sl.registerLazySingleton(() => ModelDownloaderService());
+  sl.registerLazySingleton(() => AiAssistantService(apiClient: sl()));
+  sl.registerFactory(() => AiAssistantBloc(
+    aiAssistantService: sl(),
+    localLlmService: sl(),
+    modelDownloaderService: sl(),
+  ));
+}

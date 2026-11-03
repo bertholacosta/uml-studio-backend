@@ -1,0 +1,22 @@
+# =========================================================================
+# STAGE 1: BUILD JAR CON EL GRADLE WRAPPER
+# =========================================================================
+FROM eclipse-temurin:{{javaVer}}-jdk-alpine AS builder
+WORKDIR /app
+COPY gradlew settings.gradle build.gradle ./
+COPY gradle ./gradle
+# Descarga Gradle y las dependencias en una capa propia (se reutiliza si solo cambia el código)
+RUN chmod +x gradlew && ./gradlew dependencies --no-daemon -q > /dev/null
+COPY src ./src
+RUN ./gradlew bootJar --no-daemon -x test
+
+# =========================================================================
+# STAGE 2: RUNTIME CONTAINER LIGERO
+# =========================================================================
+FROM eclipse-temurin:{{javaVer}}-jre-alpine
+WORKDIR /app
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+COPY --from=builder /app/build/libs/*.jar app.jar
+EXPOSE {{serverPort}}
+ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-jar", "app.jar"]

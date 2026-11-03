@@ -1,0 +1,231 @@
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:equatable/equatable.dart';
+import '../../data/models/chat_message.dart';
+import '../../data/services/ai_assistant_service.dart';
+import '../../data/services/local_llm_service.dart';
+import '../../data/services/model_downloader_service.dart';
+
+// ================= EVENTS =================
+abstract class AiAssistantEvent extends Equatable {
+  const AiAssistantEvent();
+
+  @override
+  List<Object?> get props => [];
+}
+
+class AiSendMessageEvent extends AiAssistantEvent {
+  final String text;
+  const AiSendMessageEvent(this.text);
+
+  @override
+  List<Object?> get props => [text];
+}
+
+class AiClearHistoryEvent extends AiAssistantEvent {}
+
+/// Evento para inicializar el modelo Qwen2.5 local (descargar si es necesario + cargar)
+class AiInitModelEvent extends AiAssistantEvent {}
+
+/// Evento interno para actualizar progreso de descarga
+class AiModelProgressEvent extends AiAssistantEvent {
+  final double progress;
+  const AiModelProgressEvent(this.progress);
+  @override
+  List<Object?> get props => [progress];
+}
+
+/// Evento interno cuando el modelo está listo
+class AiModelReadyEvent extends AiAssistantEvent {}
+
+/// Evento interno cuando hay error en el modelo
+class AiModelErrorEvent extends AiAssistantEvent {
+  final String error;
+  const AiModelErrorEvent(this.error);
+  @override
+  List<Object?> get props => [error];
+}
+
+// ================= STATE =================
+class AiAssistantState extends Equatable {
+  final List<ChatMessage> messages;
+  final bool isLoading;
+  final bool isModelLoaded;
+  final bool isDownloading;
+  final double downloadProgress;
+  final String? modelError;
+
+  const AiAssistantState({
+    required this.messages,
+    required this.isLoading,
+    this.isModelLoaded = false,
+    this.isDownloading = false,
+    this.downloadProgress = 0.0,
+    this.modelError,
+  });
+
+  factory AiAssistantState.initial() {
+    return AiAssistantState(
+      messages: [
+        ChatMessage(
+          id: 'welcome',
+          text: '👋 **¡Hola! Soy tu Asistente con Qwen2.5 IA Local.**\n\n'
+              'Puedo ayudarte a guardar o consultar información en el backend sin tener que llenar formularios manualmente. '
+              'También puedes chatear conmigo sobre cualquier tema.\n\n'
+              '💡 **Ejemplos de comandos:**\n\n'
+              '- _"Registra un registro..."_\n'
+              '- _"Listar registros del sistema"_\n'
+              '- _"¿Qué es Flutter?"_ (chat libre)',
+          sender: MessageSender.bot,
+          timestamp: DateTime.now(),
+        ),
+      ],
+      isLoading: false,
+      isModelLoaded: false,
+      isDownloading: false,
+      downloadProgress: 0.0,
+      modelError: null,
+    );
+  }
+
+  AiAssistantState copyWith({
+    List<ChatMessage>? messages,
+    bool? isLoading,
+    bool? isModelLoaded,
+    bool? isDownloading,
+    double? downloadProgress,
+    String? modelError,
+  }) {
+    return AiAssistantState(
+      messages: messages ?? this.messages,
+      isLoading: isLoading ?? this.isLoading,
+      isModelLoaded: isModelLoaded ?? this.isModelLoaded,
+      isDownloading: isDownloading ?? this.isDownloading,
+      downloadProgress: downloadProgress ?? this.downloadProgress,
+      modelError: modelError,
+    );
+  }
+
+  @override
+  List<Object?> get props => [
+        messages,
+        isLoading,
+        isModelLoaded,
+        isDownloading,
+        downloadProgress,
+        modelError,
+      ];
+}
+
+// ================= BLOC =================
+class AiAssistantBloc extends Bloc<AiAssistantEvent, AiAssistantState> {
+  final AiAssistantService aiAssistantService;
+  final LocalLlmService localLlmService;
+  final ModelDownloaderService modelDownloaderService;
+
+  AiAssistantBloc({
+    required this.aiAssistantService,
+    required this.localLlmService,
+    required this.modelDownloaderService,
+  }) : super(AiAssistantState.initial()) {
+    on<AiSendMessageEvent>(_onSendMessage);
+    on<AiClearHistoryEvent>(_onClearHistory);
+    on<AiInitModelEvent>(_onInitModel);
+    on<AiModelProgressEvent>(_onModelProgress);
+  }
+
+  // ── Inicializar modelo Qwen2.5 local ──────────────────────────────────────
+  Future<void> _onInitModel(
+    AiInitModelEvent event,
+    Emitter<AiAssistantState> emit,
+  ) async {
+    // Si ya está cargado, no hacer nada
+    if (localLlmService.isModelLoaded) {
+      emit(state.copyWith(isModelLoaded: true, isDownloading: false));
+      return;
+    }
+
+    emit(state.copyWith(
+      isDownloading: true,
+      downloadProgress: 0.0,
+      modelError: null,
+    ));
+
+    try {
+      // 1. Verificar si el modelo ya está descargado
+      String? modelPath = await modelDownloaderService.getModelPath();
+
+      // 2. Si no está descargado, descargarlo con progreso
+      if (modelPath == null) {
+        modelPath = await modelDownloaderService.downloadModel(
+          onProgress: (progress) {
+            add(AiModelProgressEvent(progress));
+          },
+        );
+      } else {
+        emit(state.copyWith(downloadProgress: 1.0));
+      }
+
+      // 3. Inicializar el LLM local con el modelo descargado
+      await localLlmService.init(modelPath);
+
+      // 4. Conectar el LLM local al servicio de asistente
+      aiAssistantService.setLocalLlmService(localLlmService);
+
+      emit(state.copyWith(
+        isModelLoaded: true,
+        isDownloading: false,
+        downloadProgress: 1.0,
+      ));
+    } catch (e) {
+      emit(state.copyWith(
+        isDownloading: false,
+        modelError: e.toString(),
+      ));
+    }
+  }
+
+  // ── Actualizar progreso de descarga ───────────────────────────────────────
+  void _onModelProgress(
+    AiModelProgressEvent event,
+    Emitter<AiAssistantState> emit,
+  ) {
+    emit(state.copyWith(
+      isDownloading: true,
+      downloadProgress: event.progress,
+    ));
+  }
+
+  // ── Enviar mensaje al asistente ───────────────────────────────────────────
+  Future<void> _onSendMessage(
+    AiSendMessageEvent event,
+    Emitter<AiAssistantState> emit,
+  ) async {
+    final userMsg = ChatMessage(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      text: event.text,
+      sender: MessageSender.user,
+      timestamp: DateTime.now(),
+    );
+
+    final updatedMessages = List<ChatMessage>.from(state.messages)..add(userMsg);
+    emit(state.copyWith(messages: updatedMessages, isLoading: true));
+
+    final botResponse = await aiAssistantService.processMessage(event.text);
+
+    emit(state.copyWith(
+      messages: List<ChatMessage>.from(state.messages)..add(botResponse),
+      isLoading: false,
+    ));
+  }
+
+  // ── Limpiar historial ─────────────────────────────────────────────────────
+  void _onClearHistory(
+    AiClearHistoryEvent event,
+    Emitter<AiAssistantState> emit,
+  ) {
+    localLlmService.clearHistory();
+    emit(AiAssistantState.initial().copyWith(
+      isModelLoaded: state.isModelLoaded,
+    ));
+  }
+}

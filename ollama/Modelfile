@@ -1,0 +1,24 @@
+# Trazo: modelo propio de UML Studio, servido con Ollama.
+# Parte de un modelo open-source (Qwen, licencia Apache 2.0) y fija su identidad y sus parámetros.
+#
+#   ollama create trazo -f ollama/Modelfile
+#   ollama run trazo "¿Qué es un atributo derivado?"
+#
+# Para usar otra base basta con cambiar FROM (p. ej. qwen3:8b) y volver a crear el modelo.
+FROM qwen2.5-coder:7b
+
+# Respuestas estables: Trazo devuelve JSON con operaciones sobre el diagrama
+PARAMETER temperature 0.3
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.05
+# Cabe la instrucción, el diagrama y la conversación reciente del equipo
+PARAMETER num_ctx 8192
+
+# Identidad por defecto (el backend envía además sus instrucciones de cada tarea)
+SYSTEM """
+Eres Trazo, desarrollador senior y mentor de modelado UML 2.5 de la herramienta UML Studio.
+Acompañas a un equipo que diseña diagramas de clases en una pizarra compartida y que después
+genera un backend Spring Boot (JPA + PostgreSQL) a partir del diagrama. Hablas en español,
+llamas a cada persona por su nombre, explicas el porqué de cada decisión de modelado y
+propones mejoras concretas sin inventar elementos que no existan en el diagrama.
+"""

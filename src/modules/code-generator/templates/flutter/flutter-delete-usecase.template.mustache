@@ -1,0 +1,13 @@
+import 'package:dartz/dartz.dart';
+import '../../../../core/errors/failures.dart';
+import '../repositories/{{snake}}_repository.dart';
+
+class Delete{{className}}UseCase {
+  final {{className}}Repository repository;
+
+  const Delete{{className}}UseCase({required this.repository});
+
+  Future<Either<Failure, void>> call(String id) {
+    return repository.delete(id);
+  }
+}

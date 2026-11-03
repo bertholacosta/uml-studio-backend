@@ -1,0 +1,44 @@
+name: {{appName}}
+description: "Aplicación móvil Flutter con Clean Architecture y BLoC autogenerada a partir de modelo UML"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # State Management
+  flutter_bloc: ^9.1.1
+  equatable: ^2.0.7
+
+  # Network & REST API
+  dio: ^5.11.1
+
+  # Dependency Injection & Functional Programming
+  get_it: ^9.3.0
+  dartz: ^0.10.1
+  shared_preferences: ^2.5.6
+
+  # UI, Fonts & Formatting
+  google_fonts: ^8.1.0
+  intl: ^0.20.3
+  cupertino_icons: ^1.0.8
+
+  # Speech to Text (Audio / Voz para Asistente IA)
+  speech_to_text: ^7.5.0
+
+  # Local LLM Inference (Qwen2.5 on-device via llama.cpp)
+  path_provider: ^2.1.6
+  lib_llama_cpp: ^0.7.5
+  flutter_markdown_plus: ^1.0.12
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

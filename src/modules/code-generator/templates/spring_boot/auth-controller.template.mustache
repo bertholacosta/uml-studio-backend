@@ -1,0 +1,35 @@
+package {{packageName}}.controllers;
+
+import {{packageName}}.services.AuthService;
+import {{packageName}}.dtos.auth.LoginRequestDto;
+import {{packageName}}.dtos.auth.RegisterRequestDto;
+import {{packageName}}.dtos.auth.AuthResponseDto;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/v1/auth")
+@RequiredArgsConstructor
+@Tag(name = "Autenticación", description = "Endpoints para inicio de sesión, registro y gestión de JWT")
+public class AuthController {
+
+    private final AuthService authService;
+
+    @PostMapping("/login")
+    @Operation(summary = "Iniciar sesión y obtener token JWT")
+    public ResponseEntity<AuthResponseDto> login(@Valid @RequestBody LoginRequestDto request) {
+        return ResponseEntity.ok(authService.login(request));
+    }
+
+    @PostMapping("/register")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Registrar un nuevo usuario")
+    public ResponseEntity<AuthResponseDto> register(@Valid @RequestBody RegisterRequestDto request) {
+        return new ResponseEntity<>(authService.register(request), HttpStatus.CREATED);
+    }
+}

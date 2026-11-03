@@ -1,0 +1,34 @@
+-- =========================================================================
+-- FLYWAY MIGRATION SCRIPT V1: INITIAL SCHEMA CREATION
+-- Project: {{projectName}}
+-- Generated: {{generatedDate}}
+-- =========================================================================
+
+-- Habilitar extensión para generación de UUIDs nativos
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+{{#tables}}
+-- Tabla: {{tableName}}
+CREATE TABLE IF NOT EXISTS "{{tableName}}" (
+{{{columnsSql}}}
+);
+
+{{/tables}}
+{{#hasForeignKeys}}
+-- =========================================================================
+-- FOREIGN KEY CONSTRAINTS
+-- =========================================================================
+{{#foreignKeys}}
+{{{sql}}}
+{{/foreignKeys}}
+
+{{/hasForeignKeys}}
+{{#hasSeed}}
+-- =========================================================================
+-- INITIAL SEED DATA FOR AUTHENTICATION
+-- =========================================================================
+-- Usuario inicial: admin@studio.com / Password: admin123 (BCrypt Hash)
+INSERT INTO "{{seedTable}}" ({{{seedCols}}})
+VALUES ({{{seedVals}}})
+ON CONFLICT DO NOTHING;
+{{/hasSeed}}

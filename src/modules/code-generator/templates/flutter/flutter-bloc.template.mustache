@@ -1,0 +1,99 @@
+import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../domain/usecases/get_{{snakePlural}}_usecase.dart';
+import '../../domain/usecases/get_{{snake}}_by_id_usecase.dart';
+import '../../domain/usecases/create_{{snake}}_usecase.dart';
+import '../../domain/usecases/update_{{snake}}_usecase.dart';
+import '../../domain/usecases/delete_{{snake}}_usecase.dart';
+import '{{snake}}_event.dart';
+import '{{snake}}_state.dart';
+
+class {{className}}Bloc extends Bloc<{{className}}Event, {{className}}State> {
+  final Get{{classPlural}}UseCase get{{classPlural}}UseCase;
+  final Get{{className}}ByIdUseCase get{{className}}ByIdUseCase;
+  final Create{{className}}UseCase create{{className}}UseCase;
+  final Update{{className}}UseCase update{{className}}UseCase;
+  final Delete{{className}}UseCase delete{{className}}UseCase;
+
+  {{className}}Bloc({
+    required this.get{{classPlural}}UseCase,
+    required this.get{{className}}ByIdUseCase,
+    required this.create{{className}}UseCase,
+    required this.update{{className}}UseCase,
+    required this.delete{{className}}UseCase,
+  }) : super({{className}}InitialState()) {
+    on<Load{{classPlural}}Event>(_onLoad{{classPlural}});
+    on<Get{{className}}ByIdEvent>(_onGet{{className}}ById);
+    on<Create{{className}}Event>(_onCreate{{className}});
+    on<Update{{className}}Event>(_onUpdate{{className}});
+    on<Delete{{className}}Event>(_onDelete{{className}});
+  }
+
+  Future<void> _onLoad{{classPlural}}(
+    Load{{classPlural}}Event event,
+    Emitter<{{className}}State> emit,
+  ) async {
+    emit({{className}}LoadingState());
+    final result = await get{{classPlural}}UseCase();
+    result.fold(
+      (failure) => emit({{className}}ErrorState(failure.message)),
+      (items) => emit({{classPlural}}LoadedState(items)),
+    );
+  }
+
+  Future<void> _onGet{{className}}ById(
+    Get{{className}}ByIdEvent event,
+    Emitter<{{className}}State> emit,
+  ) async {
+    emit({{className}}LoadingState());
+    final result = await get{{className}}ByIdUseCase(event.id);
+    result.fold(
+      (failure) => emit({{className}}ErrorState(failure.message)),
+      (item) => emit({{className}}DetailLoadedState(item)),
+    );
+  }
+
+  Future<void> _onCreate{{className}}(
+    Create{{className}}Event event,
+    Emitter<{{className}}State> emit,
+  ) async {
+    emit({{className}}LoadingState());
+    final result = await create{{className}}UseCase(event.entity);
+    result.fold(
+      (failure) => emit({{className}}ErrorState(failure.message)),
+      (_) {
+        emit(const {{className}}OperationSuccessState('{{className}} creado exitosamente'));
+        add(const Load{{classPlural}}Event());
+      },
+    );
+  }
+
+  Future<void> _onUpdate{{className}}(
+    Update{{className}}Event event,
+    Emitter<{{className}}State> emit,
+  ) async {
+    emit({{className}}LoadingState());
+    final result = await update{{className}}UseCase(event.id, event.entity);
+    result.fold(
+      (failure) => emit({{className}}ErrorState(failure.message)),
+      (_) {
+        emit(const {{className}}OperationSuccessState('{{className}} actualizado exitosamente'));
+        add(const Load{{classPlural}}Event());
+      },
+    );
+  }
+
+  Future<void> _onDelete{{className}}(
+    Delete{{className}}Event event,
+    Emitter<{{className}}State> emit,
+  ) async {
+    emit({{className}}LoadingState());
+    final result = await delete{{className}}UseCase(event.id);
+    result.fold(
+      (failure) => emit({{className}}ErrorState(failure.message)),
+      (_) {
+        emit(const {{className}}OperationSuccessState('{{className}} eliminado exitosamente'));
+        add(const Load{{classPlural}}Event());
+      },
+    );
+  }
+}

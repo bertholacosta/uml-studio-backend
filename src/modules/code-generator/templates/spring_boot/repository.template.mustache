@@ -1,0 +1,15 @@
+package {{basePackage}}.repositories;
+
+{{#imports}}
+import {{.}};
+{{/imports}}
+
+/**
+ * Repositorio Spring Data JPA para la entidad {{className}}.
+ */
+@Repository
+public interface {{className}}Repository extends JpaRepository<{{className}}, {{idType}}> {
+{{#queryMethods}}
+    {{.}};
+{{/queryMethods}}
+}

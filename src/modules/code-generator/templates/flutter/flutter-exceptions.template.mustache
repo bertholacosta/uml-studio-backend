@@ -1,0 +1,31 @@
+/// Excepciones lanzadas por el Data Layer al comunicarse con la API REST.
+class ServerException implements Exception {
+  final String message;
+  final int? statusCode;
+
+  const ServerException({
+    required this.message,
+    this.statusCode,
+  });
+
+  @override
+  String toString() => 'ServerException(statusCode: $statusCode, message: $message)';
+}
+
+class NetworkException implements Exception {
+  final String message;
+
+  const NetworkException({required this.message});
+
+  @override
+  String toString() => 'NetworkException(message: $message)';
+}
+
+class NotFoundException implements Exception {
+  final String message;
+
+  const NotFoundException({required this.message});
+
+  @override
+  String toString() => 'NotFoundException(message: $message)';
+}

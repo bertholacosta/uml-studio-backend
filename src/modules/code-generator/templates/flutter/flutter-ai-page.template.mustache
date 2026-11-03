@@ -1,0 +1,533 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import '../bloc/ai_assistant_bloc.dart';
+import '../../data/models/chat_message.dart';
+
+class AiAssistantPage extends StatefulWidget {
+  const AiAssistantPage({super.key});
+
+  @override
+  State<AiAssistantPage> createState() => _AiAssistantPageState();
+}
+
+class _AiAssistantPageState extends State<AiAssistantPage> {
+  final TextEditingController _controller = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  final FocusNode _focusNode = FocusNode();
+  final stt.SpeechToText _speech = stt.SpeechToText();
+  bool _isListening = false;
+  bool _speechAvailable = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initSpeech();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<AiAssistantBloc>().add(AiInitModelEvent());
+    });
+  }
+
+  Future<void> _initSpeech() async {
+    try {
+      _speechAvailable = await _speech.initialize(
+        onError: (err) {
+          if (mounted) setState(() => _isListening = false);
+        },
+        onStatus: (status) {
+          if (status == 'done' || status == 'notListening') {
+            if (mounted) setState(() => _isListening = false);
+          }
+        },
+      );
+      if (mounted) setState(() {});
+    } catch (_) {
+      _speechAvailable = false;
+    }
+  }
+
+  Future<void> _toggleListening() async {
+    if (!_speechAvailable) {
+      await _initSpeech();
+      if (!_speechAvailable) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Reconocimiento de voz no disponible o sin permiso de micrófono.'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+    }
+
+    if (_isListening) {
+      await _speech.stop();
+      if (mounted) setState(() => _isListening = false);
+    } else {
+      String? targetLocaleId;
+      try {
+        final locales = await _speech.locales();
+        final esLocale = locales.firstWhere(
+          (l) => l.localeId.toLowerCase().startsWith('es'),
+          orElse: () => locales.isNotEmpty ? locales.first : (throw Exception()),
+        );
+        targetLocaleId = esLocale.localeId;
+      } catch (_) {}
+
+      setState(() => _isListening = true);
+      await _speech.listen(
+        listenOptions: stt.SpeechListenOptions(
+          localeId: targetLocaleId,
+        ),
+        onResult: (result) {
+          setState(() {
+            _controller.text = result.recognizedWords;
+            _controller.selection = TextSelection.fromPosition(
+              TextPosition(offset: _controller.text.length),
+            );
+          });
+          if (result.finalResult && result.recognizedWords.trim().isNotEmpty) {
+            setState(() => _isListening = false);
+          }
+        },
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _speech.stop();
+    _controller.dispose();
+    _scrollController.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  void _sendMessage([String? preset]) {
+    final text = preset ?? _controller.text.trim();
+    if (text.isEmpty) return;
+
+    if (_isListening) {
+      _speech.stop();
+      setState(() => _isListening = false);
+    }
+
+    context.read<AiAssistantBloc>().add(AiSendMessageEvent(text));
+    if (preset == null) {
+      _controller.clear();
+    }
+    _scrollToBottom();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final primaryColor = Theme.of(context).colorScheme.primary;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Asistente IA Local', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+            Text('Qwen2.5 On-Device + Backend REST', style: TextStyle(fontSize: 11, color: Colors.grey)),
+          ],
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.delete_outline),
+            tooltip: 'Limpiar Chat',
+            onPressed: () {
+              context.read<AiAssistantBloc>().add(AiClearHistoryEvent());
+            },
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          // Banner indicador de modo - estado del modelo
+          BlocBuilder<AiAssistantBloc, AiAssistantState>(
+            buildWhen: (prev, curr) =>
+                prev.isDownloading != curr.isDownloading ||
+                prev.downloadProgress != curr.downloadProgress ||
+                prev.isModelLoaded != curr.isModelLoaded ||
+                prev.modelError != curr.modelError,
+            builder: (context, state) {
+              if (state.isDownloading) {
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  color: Colors.orange.withValues(alpha: 0.1),
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          const SizedBox(
+                            width: 14, height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Descargando Qwen2.5 (${(state.downloadProgress * 100).toStringAsFixed(0)}%)...',
+                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w500),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: state.downloadProgress,
+                          minHeight: 4,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }
+              if (state.modelError != null) {
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                  color: Colors.red.withValues(alpha: 0.08),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.warning_amber, size: 16, color: Colors.red),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          'Error modelo: ${state.modelError}',
+                          style: const TextStyle(fontSize: 11, color: Colors.red),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => context.read<AiAssistantBloc>().add(AiInitModelEvent()),
+                        child: const Text('Reintentar', style: TextStyle(fontSize: 11)),
+                      ),
+                    ],
+                  ),
+                );
+              }
+              if (state.isModelLoaded) {
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                  color: Colors.green.withValues(alpha: 0.08),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.check_circle, size: 16, color: Colors.green),
+                      SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          '✨ Qwen2.5 cargado — IA local lista para chat y backend REST',
+                          style: TextStyle(fontSize: 11, color: Colors.green, fontWeight: FontWeight.w500),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }
+              // Default: no model yet
+              return Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                color: primaryColor.withValues(alpha: 0.08),
+                child: Row(
+                  children: [
+                    Icon(Icons.bolt, size: 16, color: primaryColor),
+                    const SizedBox(width: 6),
+                    const Expanded(
+                      child: Text(
+                        'Modo Híbrido: Qwen2.5 Local + Motor On-Device',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => context.read<AiAssistantBloc>().add(AiInitModelEvent()),
+                      child: const Text('Cargar Qwen', style: TextStyle(fontSize: 11)),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+
+          // Lista de Mensajes
+          Expanded(
+            child: BlocBuilder<AiAssistantBloc, AiAssistantState>(
+              builder: (context, state) {
+                return ListView.builder(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  itemCount: state.messages.length + (state.isLoading ? 1 : 0),
+                  itemBuilder: (context, index) {
+                    if (index == state.messages.length && state.isLoading) {
+                      return _buildTypingIndicator(context);
+                    }
+                    final msg = state.messages[index];
+                    return _buildMessageBubble(context, msg);
+                  },
+                );
+              },
+            ),
+          ),
+
+          // Sugerencias Rápidas
+          Container(
+            height: 46,
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            color: Theme.of(context).colorScheme.surface,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              children: [
+{{#sampleSuggestions}}
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: ActionChip(
+                    avatar: const Icon(Icons.auto_awesome, size: 14),
+                    label: const Text('{{label}}', style: TextStyle(fontSize: 12)),
+                    onPressed: () {
+                      setState(() {
+                        _controller.text = '{{prompt}}';
+                        _controller.selection = TextSelection.fromPosition(
+                          TextPosition(offset: _controller.text.length),
+                        );
+                      });
+                      _focusNode.requestFocus();
+                    },
+                  ),
+                ),
+{{/sampleSuggestions}}
+              ],
+            ),
+          ),
+
+          if (_isListening)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              color: Colors.redAccent.withValues(alpha: 0.12),
+              child: const Row(
+                children: [
+                  Icon(Icons.mic, color: Colors.redAccent, size: 18),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '🔴 Escuchando... Di: "Elimina cliente con id ...", "Registra...", o "Actualiza..."',
+                      style: TextStyle(fontSize: 12, color: Colors.redAccent, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          const Divider(height: 1),
+
+          // Barra de entrada de texto y audio
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            color: Theme.of(context).cardColor,
+            child: SafeArea(
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _controller,
+                      focusNode: _focusNode,
+                      minLines: 1,
+                      maxLines: 3,
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => _sendMessage(),
+                      decoration: InputDecoration(
+                        hintText: _isListening
+                            ? 'Escuchando tu voz...'
+                            : 'Escribe o habla (ej. Elimina cliente con id...)',
+                        hintStyle: TextStyle(
+                          fontSize: 13,
+                          color: _isListening ? Colors.redAccent : Colors.grey[500],
+                        ),
+                        prefixIcon: _isListening
+                            ? const Icon(Icons.graphic_eq, color: Colors.redAccent)
+                            : null,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(24),
+                          borderSide: BorderSide(
+                            color: _isListening ? Colors.redAccent : Colors.grey.withValues(alpha: 0.3),
+                          ),
+                        ),
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  // Botón de Micrófono / Audio
+                  IconButton(
+                    icon: Icon(
+                      _isListening ? Icons.mic : Icons.mic_none,
+                      color: _isListening ? Colors.redAccent : primaryColor,
+                    ),
+                    tooltip: _isListening ? 'Detener voz' : 'Hablar',
+                    onPressed: _toggleListening,
+                  ),
+                  // Botón de Enviar
+                  IconButton(
+                    icon: Icon(Icons.send_rounded, color: primaryColor),
+                    tooltip: 'Enviar instrucción',
+                    onPressed: () => _sendMessage(),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMessageBubble(BuildContext context, ChatMessage message) {
+    final isUser = message.sender == MessageSender.user;
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!isUser) ...[
+            CircleAvatar(
+              radius: 16,
+              backgroundColor: message.isError
+                  ? Colors.red.withValues(alpha: 0.15)
+                  : theme.colorScheme.primaryContainer,
+              child: Icon(
+                message.isError ? Icons.warning_amber_rounded : Icons.smart_toy_rounded,
+                size: 18,
+                color: message.isError ? Colors.red : theme.colorScheme.primary,
+              ),
+            ),
+            const SizedBox(width: 8),
+          ],
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: isUser
+                    ? theme.colorScheme.primary
+                    : message.isError
+                        ? Colors.red.withValues(alpha: 0.08)
+                        : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                borderRadius: BorderRadius.only(
+                  topLeft: const Radius.circular(16),
+                  topRight: const Radius.circular(16),
+                  bottomLeft: Radius.circular(isUser ? 16 : 4),
+                  bottomRight: Radius.circular(isUser ? 4 : 16),
+                ),
+                border: !isUser && message.actionType == 'create'
+                    ? Border.all(color: Colors.green.withValues(alpha: 0.5), width: 1.5)
+                    : null,
+              ),
+              child: isUser
+                  ? SelectableText(
+                      message.text,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        height: 1.35,
+                        color: Colors.white,
+                      ),
+                    )
+                  : MarkdownBody(
+                      data: _formatMarkdownForDisplay(message.text),
+                      selectable: true,
+                      softLineBreak: true,
+                      styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                        p: TextStyle(
+                          fontSize: 14,
+                          height: 1.35,
+                          color: theme.textTheme.bodyMedium?.color,
+                        ),
+                        strong: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: theme.textTheme.bodyLarge?.color,
+                        ),
+                        em: const TextStyle(fontStyle: FontStyle.italic),
+                        listBullet: TextStyle(
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                    ),
+            ),
+          ),
+          if (isUser) ...[
+            const SizedBox(width: 8),
+            CircleAvatar(
+              radius: 16,
+              backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.2),
+              child: Icon(Icons.person, size: 18, color: theme.colorScheme.primary),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTypingIndicator(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 16,
+            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+            child: const Icon(Icons.smart_toy_rounded, size: 18),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 8),
+                Text('Procesando con Qwen2.5...', style: TextStyle(fontSize: 12, color: Colors.grey)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatMarkdownForDisplay(String text) {
+    // 1. Convertir viñetas unicode "•" en viñetas markdown estándar "- "
+    var formatted = text.replaceAll(RegExp(r'(?:^|\n)\s*•\s*'), '\n- ');
+    // 2. Si un elemento de lista (- item) o numeración (1. item) está inmediatamente tras una línea de texto sin doble salto, insertar doble salto
+    formatted = formatted.replaceAllMapped(
+      RegExp(r'([^\n])\n(- |\* |\d+\. )'),
+      (match) => '${match.group(1)}\n\n${match.group(2)}',
+    );
+    return formatted.trim();
+  }
+}

@@ -1,0 +1,45 @@
+package {{basePackage}}.dtos;
+
+{{#imports}}
+import {{.}};
+{{/imports}}
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+
+/**
+ * DTO de respuesta para {{className}}.
+ * Generado con Project Lombok por UML Studio Architecture Generator.
+ */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class {{className}}ResponseDto {
+
+{{#processedFields}}
+    private {{javaType}} {{name}};
+{{/processedFields}}
+{{#fkFields}}
+    private {{idType}} {{fieldName}}Id;
+{{/fkFields}}
+{{#m2mFields}}
+    private List<{{idType}}> {{idsFieldName}};
+{{/m2mFields}}
+
+    public static {{className}}ResponseDto fromEntity({{className}} entity) {
+        if (entity == null) return null;
+        return {{className}}ResponseDto.builder()
+{{#processedFields}}
+            .{{name}}(entity.{{getterName}}())
+{{/processedFields}}
+{{#fkFields}}
+            .{{fieldName}}Id(entity.get{{capFieldName}}() != null ? entity.get{{capFieldName}}().{{targetIdGetterName}}() : null)
+{{/fkFields}}
+{{#m2mFields}}
+            .{{idsFieldName}}(entity.get{{capFieldName}}().stream().map({{targetClassName}}::{{targetIdGetterName}}).toList())
+{{/m2mFields}}
+            .build();
+    }
+}

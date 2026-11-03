@@ -1,0 +1,11 @@
+import 'package:dartz/dartz.dart';
+import '../../../../core/errors/failures.dart';
+import '../entities/{{snake}}_entity.dart';
+
+abstract class {{className}}Repository {
+  Future<Either<Failure, List<{{className}}Entity>>> getAll();
+  Future<Either<Failure, {{className}}Entity>> getById(String id);
+  Future<Either<Failure, {{className}}Entity>> create({{className}}Entity entity);
+  Future<Either<Failure, {{className}}Entity>> update(String id, {{className}}Entity entity);
+  Future<Either<Failure, void>> delete(String id);
+}

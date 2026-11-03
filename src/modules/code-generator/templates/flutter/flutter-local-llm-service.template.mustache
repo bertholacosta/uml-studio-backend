@@ -1,0 +1,174 @@
+import 'dart:async';
+import 'package:lib_llama_cpp/lib_llama_cpp.dart';
+
+/// Service to handle local LLM inference using Qwen2.5 GGUF models.
+/// 
+/// Uses [LlamaOpenAIClient] backed by the prebuilt native binaries of [lib_llama_cpp]
+/// running on-device in an isolated background thread.
+class LocalLlmService {
+  LlamaOpenAIClient? _client;
+  bool _isModelLoaded = false;
+
+  // Stores conversation history. Each entry has 'role' and 'content' keys.
+  final List<Map<String, String>> _history = [];
+
+  /// Returns true if a model has been successfully loaded.
+  bool get isModelLoaded => _isModelLoaded;
+
+  /// Initializes the service by loading the GGUF model from the specified [modelPath].
+  Future<void> init(String modelPath) async {
+    if (_isModelLoaded && _client != null) return;
+
+    try {
+      _client = LlamaOpenAIClient(
+        models: {
+          'qwen': LlamaModelConfig(
+            modelPath: modelPath,
+            contextSize: 4096, // Plenty of room for system prompt and conversation
+          ),
+        },
+      );
+
+      _isModelLoaded = true;
+    } catch (e) {
+      _isModelLoaded = false;
+      _client = null;
+      rethrow;
+    }
+  }
+
+  /// Clears the multi-turn conversation history.
+  void clearHistory() {
+    _history.clear();
+  }
+
+  /// Prunes conversation history so it never overflows the LLM context window.
+  void _pruneHistory() {
+    // Keep at most the last 4 messages (2 conversation turns)
+    if (_history.length > 4) {
+      _history.removeRange(0, _history.length - 4);
+    }
+
+    // Ensure individual message contents are not excessively long
+    for (int i = 0; i < _history.length; i++) {
+      final content = _history[i]['content'] ?? '';
+      if (content.length > 300) {
+        _history[i]['content'] = content.substring(0, 300);
+      }
+    }
+  }
+
+  /// Generates a one-shot response for structural JSON extraction or data synthesis
+  /// without modifying or reading the multi-turn conversational history.
+  Future<String> generateOneShot(
+    String systemPrompt,
+    String userMessage, {
+    int maxTokens = 250,
+    double temperature = 0.1,
+  }) async {
+    if (!_isModelLoaded || _client == null) {
+      throw StateError('Model is not loaded. Call init() first.');
+    }
+
+    final response = await _client!.responses.create(
+      model: 'qwen',
+      instructions: systemPrompt.isNotEmpty ? systemPrompt : null,
+      input: [
+        LlamaResponseInputItem(
+          role: 'user',
+          content: userMessage,
+        ),
+      ],
+      maxOutputTokens: maxTokens,
+      temperature: temperature,
+      topP: 0.9,
+      stop: const ['<|im_end|>', '<|endoftext|>', '<|im_start|>', '\n\n\n'],
+    );
+
+    return response.outputText.trim();
+  }
+
+  /// Generates a response for the given [userMessage] taking into account the [systemPrompt]
+  /// and the conversation history.
+  /// 
+  /// Optionally accepts an [onToken] callback to stream the response as it is generated.
+  Future<String> generateResponse(
+    String systemPrompt,
+    String userMessage, {
+    void Function(String token)? onToken,
+  }) async {
+    if (!_isModelLoaded || _client == null) {
+      throw StateError('Model is not loaded. Call init() first.');
+    }
+
+    _pruneHistory();
+    _history.add({'role': 'user', 'content': userMessage});
+
+    final inputItems = <LlamaResponseInputItem>[
+      for (final m in _history)
+        LlamaResponseInputItem(
+          role: m['role']!,
+          content: m['content']!,
+        ),
+    ];
+
+    try {
+      if (onToken != null) {
+        final buffer = StringBuffer();
+        final stream = _client!.responses.stream(
+          model: 'qwen',
+          instructions: systemPrompt.isNotEmpty ? systemPrompt : null,
+          input: inputItems,
+          maxOutputTokens: 200, // Capped to avoid runaway generation loops
+          temperature: 0.1,    // Greedy deterministic generation for accurate JSON/chat
+          topP: 0.9,
+          stop: const ['<|im_end|>', '<|endoftext|>', '<|im_start|>', '\n\n\n'],
+        );
+
+        await for (final event in stream) {
+          if (event case LlamaResponseOutputTextDelta(:final delta)) {
+            buffer.write(delta);
+            onToken(delta);
+          }
+        }
+
+        final result = buffer.toString().trim();
+        if (result.isNotEmpty) {
+          // Limit saved response in history to avoid polluting future context
+          final trimmedResult = result.length > 300 ? result.substring(0, 300) : result;
+          _history.add({'role': 'assistant', 'content': trimmedResult});
+        }
+        return result;
+      } else {
+        final response = await _client!.responses.create(
+          model: 'qwen',
+          instructions: systemPrompt.isNotEmpty ? systemPrompt : null,
+          input: inputItems,
+          maxOutputTokens: 200, // Capped to avoid runaway generation loops
+          temperature: 0.1,    // Greedy deterministic generation for accurate JSON/chat
+          topP: 0.9,
+          stop: const ['<|im_end|>', '<|endoftext|>', '<|im_start|>', '\n\n\n'],
+        );
+
+        final result = response.outputText.trim();
+        if (result.isNotEmpty) {
+          final trimmedResult = result.length > 300 ? result.substring(0, 300) : result;
+          _history.add({'role': 'assistant', 'content': trimmedResult});
+        }
+        return result;
+      }
+    } catch (e) {
+      // If generation fails, remove the last user prompt to avoid corrupting history
+      if (_history.isNotEmpty && _history.last['role'] == 'user') {
+        _history.removeLast();
+      }
+      rethrow;
+    }
+  }
+
+  /// Cleans up resources and unloads the model.
+  void dispose() {
+    _isModelLoaded = false;
+    _client = null;
+  }
+}

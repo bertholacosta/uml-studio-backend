@@ -1,0 +1,37 @@
+package {{basePackage}}.dtos;
+
+{{#imports}}
+import {{.}};
+{{/imports}}
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+
+/**
+ * DTO para la creación de {{className}}.
+ * Generado con Project Lombok por UML Studio Architecture Generator.
+ */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class Create{{className}}Dto {
+
+{{#processedFields}}
+    {{#isNotBlank}}
+    @NotBlank(message = "El campo '{{name}}' es obligatorio")
+    {{/isNotBlank}}
+    {{#isNotNull}}
+    @NotNull(message = "El campo '{{name}}' no puede ser nulo")
+    {{/isNotNull}}
+    private {{javaType}} {{name}};
+
+{{/processedFields}}
+{{#fkFields}}
+    private {{idType}} {{fieldName}}Id;
+{{/fkFields}}
+{{#m2mFields}}
+    private List<{{idType}}> {{idsFieldName}};
+{{/m2mFields}}
+}

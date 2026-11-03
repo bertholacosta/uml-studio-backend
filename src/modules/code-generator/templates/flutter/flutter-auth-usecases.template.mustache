@@ -1,0 +1,40 @@
+import 'package:dartz/dartz.dart';
+import '../../../../core/errors/failures.dart';
+import '../../../{{userSnake}}/domain/entities/{{userSnake}}_entity.dart';
+import '../repositories/auth_repository.dart';
+
+class LoginUseCase {
+  final AuthRepository repository;
+  LoginUseCase({required this.repository});
+
+  Future<Either<Failure, {{className}}Entity>> call(String email, String password) {
+    return repository.login(email, password);
+  }
+}
+
+class RegisterUseCase {
+  final AuthRepository repository;
+  RegisterUseCase({required this.repository});
+
+  Future<Either<Failure, {{className}}Entity>> call(String email, String password, Map<String, dynamic> extra) {
+    return repository.register(email, password, extra);
+  }
+}
+
+class LogoutUseCase {
+  final AuthRepository repository;
+  LogoutUseCase({required this.repository});
+
+  Future<Either<Failure, void>> call() {
+    return repository.logout();
+  }
+}
+
+class CheckAuthUseCase {
+  final AuthRepository repository;
+  CheckAuthUseCase({required this.repository});
+
+  Future<bool> call() {
+    return repository.checkAuthStatus();
+  }
+}

@@ -1,0 +1,49 @@
+import 'package:equatable/equatable.dart';
+import '../../domain/entities/{{snake}}_entity.dart';
+
+abstract class {{className}}State extends Equatable {
+  const {{className}}State();
+
+  @override
+  List<Object?> get props => [];
+}
+
+class {{className}}InitialState extends {{className}}State {}
+
+class {{className}}LoadingState extends {{className}}State {}
+
+class {{classPlural}}LoadedState extends {{className}}State {
+  final List<{{className}}Entity> {{camelPlural}};
+
+  const {{classPlural}}LoadedState(this.{{camelPlural}});
+
+  @override
+  List<Object?> get props => [{{camelPlural}}];
+}
+
+class {{className}}DetailLoadedState extends {{className}}State {
+  final {{className}}Entity {{camel}};
+
+  const {{className}}DetailLoadedState(this.{{camel}});
+
+  @override
+  List<Object?> get props => [{{camel}}];
+}
+
+class {{className}}OperationSuccessState extends {{className}}State {
+  final String message;
+
+  const {{className}}OperationSuccessState(this.message);
+
+  @override
+  List<Object?> get props => [message];
+}
+
+class {{className}}ErrorState extends {{className}}State {
+  final String message;
+
+  const {{className}}ErrorState(this.message);
+
+  @override
+  List<Object?> get props => [message];
+}

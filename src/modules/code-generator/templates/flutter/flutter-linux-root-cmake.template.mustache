@@ -1,0 +1,24 @@
+cmake_minimum_required(VERSION 3.10)
+project({{appName}} LANGUAGES CXX)
+
+set(BINARY_NAME "{{appName}}")
+set(APPLICATION_ID "com.uagrm.{{appName}}")
+
+cmake_policy(SET CMP0063 NEW)
+
+set(CMAKE_INSTALL_RPATH "$ORIGIN/lib")
+
+# Root filesystem for cross-building.
+if(CMAKE_SYSROOT)
+  set(FLUTTER_SYSTEM_PREFIX "${CMAKE_SYSROOT}")
+else()
+  set(FLUTTER_SYSTEM_PREFIX "")
+endif()
+
+# Define build configuration
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+add_subdirectory(flutter)
+add_subdirectory(runner)

@@ -1,0 +1,23 @@
+package {{packageName}}.dtos.auth;
+
+import jakarta.validation.constraints.NotBlank;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+
+/**
+ * DTO para la solicitud de inicio de sesión generado con Lombok.
+ */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class LoginRequestDto {
+
+    @NotBlank(message = "El identificador o correo electrónico es requerido")
+    private String email;
+
+    @NotBlank(message = "La contraseña es requerida")
+    private String password;
+}

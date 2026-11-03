@@ -1,0 +1,31 @@
+package {{packageName}}.dtos.auth;
+
+import jakarta.validation.constraints.*;
+{{#hasDates}}
+import java.time.*;
+{{/hasDates}}
+{{#hasBigDecimals}}
+import java.math.BigDecimal;
+{{/hasBigDecimals}}
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+
+/**
+ * DTO para la solicitud de registro generado con Lombok.
+ */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class RegisterRequestDto {
+
+{{#fieldsDefs}}
+{{{content}}}
+
+{{/fieldsDefs}}
+    @NotBlank(message = "La contraseña es requerida")
+    @Size(min = 6, message = "La contraseña debe tener al menos 6 caracteres")
+    private String password;
+}

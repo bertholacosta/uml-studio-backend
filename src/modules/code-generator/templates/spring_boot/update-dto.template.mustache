@@ -1,0 +1,30 @@
+package {{basePackage}}.dtos;
+
+{{#imports}}
+import {{.}};
+{{/imports}}
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+
+/**
+ * DTO para la actualización de {{className}}.
+ * Generado con Project Lombok por UML Studio Architecture Generator.
+ */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class Update{{className}}Dto {
+
+{{#processedFields}}
+    private {{javaType}} {{name}};
+{{/processedFields}}
+{{#fkFields}}
+    private {{idType}} {{fieldName}}Id;
+{{/fkFields}}
+{{#m2mFields}}
+    private List<{{idType}}> {{idsFieldName}};
+{{/m2mFields}}
+}

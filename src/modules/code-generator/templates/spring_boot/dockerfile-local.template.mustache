@@ -1,0 +1,13 @@
+# =========================================================================
+# RUNTIME LOCAL LIGERO - UTILIZA EL JAR PRECOMPILADO EN EL HOST
+# =========================================================================
+# Requiere compilar previamente en el host usando Java y Gradle locales:
+#   gradle bootJar -x test   (o ./gradlew bootJar -x test)
+# =========================================================================
+FROM eclipse-temurin:{{javaVer}}-jre-alpine
+WORKDIR /app
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+COPY build/libs/*.jar app.jar
+EXPOSE {{serverPort}}
+ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-jar", "app.jar"]

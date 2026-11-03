@@ -1,0 +1,56 @@
+import 'package:flutter/material.dart';
+import '../../domain/entities/{{snake}}_entity.dart';
+
+class {{className}}CardWidget extends StatelessWidget {
+  final {{className}}Entity item;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  const {{className}}CardWidget({
+    super.key,
+    required this.item,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final title = {{{titleExpression}}};
+    {{{subtitleExpression}}}
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        leading: CircleAvatar(
+          backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
+          foregroundColor: Theme.of(context).colorScheme.primary,
+          child: Text(
+            title.isNotEmpty ? title[0].toUpperCase() : '#',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+        ),
+        title: Text(
+          title.isNotEmpty ? title : 'ID: ${item.{{idFieldName}}}',
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+        subtitle: subtitle.isNotEmpty ? Text(subtitle) : null,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.edit_outlined, color: Colors.blueGrey),
+              onPressed: onEdit,
+              tooltip: 'Editar',
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+              onPressed: onDelete,
+              tooltip: 'Eliminar',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

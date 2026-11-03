@@ -1,0 +1,120 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../domain/entities/{{snake}}_entity.dart';
+import '../bloc/{{snake}}_bloc.dart';
+import '../bloc/{{snake}}_event.dart';
+import '../bloc/{{snake}}_state.dart';
+
+class {{className}}FormPage extends StatefulWidget {
+  final {{className}}Entity? initialItem;
+
+  const {{className}}FormPage({super.key, this.initialItem});
+
+  @override
+  State<{{className}}FormPage> createState() => _{{className}}FormPageState();
+}
+
+class _{{className}}FormPageState extends State<{{className}}FormPage> {
+  final _formKey = GlobalKey<FormState>();
+{{#controllersDef}}
+  final _{{name}}Controller = TextEditingController();
+{{/controllersDef}}
+
+  bool get isEditing => widget.initialItem != null;
+
+  @override
+  void initState() {
+    super.initState();
+    if (isEditing) {
+{{#populateControllers}}
+      _{{name}}Controller.text = {{{populateExpr}}};
+{{/populateControllers}}
+    }
+  }
+
+  @override
+  void dispose() {
+{{#disposeControllers}}
+    _{{name}}Controller.dispose();
+{{/disposeControllers}}
+    super.dispose();
+  }
+
+  void _submit() {
+    if (!_formKey.currentState!.validate()) return;
+
+    final entity = {{className}}Entity(
+{{#entityFields}}
+      {{name}}: {{{valueExpr}}},
+{{/entityFields}}
+    );
+
+    if (isEditing) {
+      context.read<{{className}}Bloc>().add(
+            Update{{className}}Event(
+              id: widget.initialItem!.{{idFieldName}}.toString(),
+              entity: entity,
+            ),
+          );
+    } else {
+      context.read<{{className}}Bloc>().add(Create{{className}}Event(entity));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(isEditing ? 'Editar {{className}}' : 'Nuevo {{className}}'),
+      ),
+      body: BlocListener<{{className}}Bloc, {{className}}State>(
+        listener: (context, state) {
+          if (state is {{className}}OperationSuccessState) {
+            Navigator.pop(context);
+          }
+        },
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+{{#formFields}}
+                TextFormField(
+                  controller: _{{name}}Controller,
+                  obscureText: {{obscureText}},
+                  decoration: const InputDecoration(
+                    labelText: '{{label}}',
+                    hintText: 'Ingrese {{labelLower}}',
+                    prefixIcon: {{prefixIcon}},
+                  ),
+                  keyboardType: {{keyboardType}},
+                  validator: (val) {
+                    {{#isRequired}}
+                    if (val == null || val.trim().isEmpty) return 'El campo {{label}} es requerido';
+                    {{/isRequired}}
+                    {{#isUuid}}
+                    if (val != null && val.trim().isNotEmpty && !RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(val.trim())) {
+                      return 'Debe ser un UUID válido (ej. a9fa1103-76f8-4ca3-9400-1fdce16e57bc)';
+                    }
+                    {{/isUuid}}
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+{{/formFields}}
+                const SizedBox(height: 12),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.save),
+                  label: Text(isEditing ? 'Actualizar' : 'Guardar'),
+                  onPressed: _submit,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

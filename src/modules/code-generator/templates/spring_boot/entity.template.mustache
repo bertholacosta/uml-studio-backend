@@ -1,0 +1,85 @@
+package {{basePackage}}.entities;
+
+{{#imports}}
+import {{.}};
+{{/imports}}
+import lombok.Getter;
+import lombok.Setter;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+import lombok.experimental.SuperBuilder;
+
+/**
+ * Entidad JPA para la tabla '{{tableName}}'.
+ * Generada automáticamente con Project Lombok por UML Studio Architecture Generator.
+ */
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@SuperBuilder
+@Entity
+@Table(name = "{{tableName}}")
+{{#isInheritanceRoot}}
+@Inheritance(strategy = InheritanceType.JOINED)
+{{/isInheritanceRoot}}
+{{#parentClassName}}
+@PrimaryKeyJoinColumn(name = "{{idColumnName}}")
+{{/parentClassName}}
+public class {{className}}{{#parentClassName}} extends {{parentClassName}}{{/parentClassName}} {
+
+{{#processedFields}}
+    {{#isId}}
+    @Id
+    @GeneratedValue(strategy = {{genStrategy}})
+    @Column(name = "{{sqlColumnName}}", updatable = false, nullable = false)
+    {{/isId}}
+    {{^isId}}
+    {{#isNotBlank}}
+    @NotBlank(message = "El campo '{{name}}' es obligatorio")
+    {{/isNotBlank}}
+    {{#isNotNull}}
+    @NotNull(message = "El campo '{{name}}' no puede ser nulo")
+    {{/isNotNull}}
+    @Column(name = "{{sqlColumnName}}"{{#isUnique}}, unique = true{{/isUnique}}{{#isText}}, columnDefinition = "TEXT"{{/isText}})
+    {{/isId}}
+    private {{javaType}} {{name}};
+
+{{/processedFields}}
+{{#processedRelationships}}
+    {{#isManyToOne}}
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "{{joinColumnName}}")
+    private {{targetClassName}} {{fieldName}};
+    {{/isManyToOne}}
+    {{#isOneToMany}}
+    @OneToMany(mappedBy = "{{mappedBy}}", cascade = CascadeType.ALL, orphanRemoval = true)
+    @JsonIgnore
+    @Builder.Default
+    private List<{{targetClassName}}> {{fieldName}} = new ArrayList<>();
+    {{/isOneToMany}}
+    {{#isOneToOne}}
+    @OneToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "{{joinColumnName}}")
+    private {{targetClassName}} {{fieldName}};
+    {{/isOneToOne}}
+    {{#isManyToManyOwner}}
+    @ManyToMany
+    @JoinTable(
+        name = "{{joinTable}}",
+        joinColumns = @JoinColumn(name = "{{joinColumnName}}"),
+        inverseJoinColumns = @JoinColumn(name = "{{inverseJoinColumnName}}")
+    )
+    @JsonIgnore
+    @Builder.Default
+    private List<{{targetClassName}}> {{fieldName}} = new ArrayList<>();
+    {{/isManyToManyOwner}}
+    {{#isManyToManyInverse}}
+    @ManyToMany(mappedBy = "{{mappedBy}}")
+    @JsonIgnore
+    @Builder.Default
+    private List<{{targetClassName}}> {{fieldName}} = new ArrayList<>();
+    {{/isManyToManyInverse}}
+
+{{/processedRelationships}}
+}

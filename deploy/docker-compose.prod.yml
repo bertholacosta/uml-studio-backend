@@ -1,0 +1,58 @@
+# Producción en la EC2: lo usa deploy/remote-deploy.sh, que genera el .env desde Parameter Store.
+# La API solo se publica en el puerto 3000, al que únicamente llega CloudFront.
+name: uml-studio
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Falta POSTGRES_PASSWORD en Parameter Store}
+      POSTGRES_DB: uml_studio_db
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d uml_studio_db"]
+      interval: 5s
+      retries: 20
+
+  mongo:
+    image: mongo:8
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      retries: 20
+
+  api:
+    image: ${API_IMAGE:?Falta API_IMAGE}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/uml_studio_db
+      DB_SYNCHRONIZE: "false"
+      MONGODB_URI: mongodb://mongo:27017/uml_studio_ai
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    # Registros en CloudWatch Logs
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: /${APP_NAME}/api
+        awslogs-create-group: "true"
+
+volumes:
+  db-data:
+  mongo-data:

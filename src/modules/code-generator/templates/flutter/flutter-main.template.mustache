@@ -1,0 +1,44 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'core/theme/app_theme.dart';
+import 'features/home/presentation/pages/home_page.dart';
+import 'injection_container.dart' as di;
+{{#hasAuth}}
+import 'features/auth/presentation/bloc/auth_bloc.dart';
+import 'features/auth/presentation/pages/login_page.dart';
+{{/hasAuth}}
+{{#classes}}
+import 'features/{{snake}}/presentation/bloc/{{snake}}_bloc.dart';
+{{/classes}}
+import 'features/ai_assistant/presentation/bloc/ai_assistant_bloc.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await di.init();
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MultiBlocProvider(
+      providers: [
+{{#hasAuth}}
+        BlocProvider<AuthBloc>(create: (_) => di.sl<AuthBloc>()..add(AuthCheckRequested())),
+{{/hasAuth}}
+{{#classes}}
+        BlocProvider<{{className}}Bloc>(create: (_) => di.sl<{{className}}Bloc>()),
+{{/classes}}
+        BlocProvider<AiAssistantBloc>(create: (_) => di.sl<AiAssistantBloc>()),
+      ],
+      child: MaterialApp(
+        title: '{{projectName}}',
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.lightTheme,
+        home: {{{homeWidget}}},
+      ),
+    );
+  }
+}

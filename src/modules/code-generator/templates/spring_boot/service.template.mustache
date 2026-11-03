@@ -1,0 +1,61 @@
+package {{basePackage}}.services;
+
+{{#imports}}
+import {{.}};
+{{/imports}}
+import lombok.RequiredArgsConstructor;
+
+/**
+ * Servicio de negocio para {{className}} generado con Lombok y Spring Data JPA.
+ */
+@Service
+@Transactional
+@RequiredArgsConstructor
+public class {{className}}Service {
+
+    private final {{className}}Repository repository;
+{{#extraRepositories}}
+    private final {{type}} {{name}};
+{{/extraRepositories}}
+{{#isAuthProtected}}
+    private final PasswordEncoder passwordEncoder;
+{{/isAuthProtected}}
+
+    @Transactional(readOnly = true)
+    public List<{{className}}ResponseDto> findAll() {
+        return repository.findAll().stream()
+                .map({{className}}ResponseDto::fromEntity)
+                .collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public {{className}}ResponseDto findById({{idType}} id) {
+        {{className}} entity = repository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("{{className}}", "id", id));
+        return {{className}}ResponseDto.fromEntity(entity);
+    }
+
+    public {{className}}ResponseDto create(Create{{className}}Dto dto) {
+        {{className}} entity = new {{className}}();
+{{{createFieldAssignments}}}
+        {{className}} saved = repository.save(entity);
+        return {{className}}ResponseDto.fromEntity(saved);
+    }
+
+    public {{className}}ResponseDto update({{idType}} id, Update{{className}}Dto dto) {
+        {{className}} entity = repository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("{{className}}", "id", id));
+
+{{{updateFieldAssignments}}}
+
+        {{className}} updated = repository.save(entity);
+        return {{className}}ResponseDto.fromEntity(updated);
+    }
+
+    public void delete({{idType}} id) {
+        if (!repository.existsById(id)) {
+            throw new ResourceNotFoundException("{{className}}", "id", id);
+        }
+        repository.deleteById(id);
+    }
+}

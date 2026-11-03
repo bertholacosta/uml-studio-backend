@@ -1,0 +1,138 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import '../bloc/{{snake}}_bloc.dart';
+import '../bloc/{{snake}}_event.dart';
+import '../bloc/{{snake}}_state.dart';
+import '../widgets/{{snake}}_card_widget.dart';
+import '{{snake}}_form_page.dart';
+
+class {{className}}ListPage extends StatefulWidget {
+  const {{className}}ListPage({super.key});
+
+  @override
+  State<{{className}}ListPage> createState() => _{{className}}ListPageState();
+}
+
+class _{{className}}ListPageState extends State<{{className}}ListPage> {
+  @override
+  void initState() {
+    super.initState();
+    context.read<{{className}}Bloc>().add(const Load{{classPlural}}Event());
+  }
+
+  void _confirmDelete(BuildContext context, String id) {
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Confirmar Eliminación'),
+        content: const Text('¿Estás seguro de que deseas eliminar este registro?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () {
+              Navigator.pop(dialogCtx);
+              context.read<{{className}}Bloc>().add(Delete{{className}}Event(id));
+            },
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('{{classPlural}}'),
+      ),
+      body: BlocConsumer<{{className}}Bloc, {{className}}State>(
+        listener: (context, state) {
+          if (state is {{className}}OperationSuccessState) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(state.message), backgroundColor: Colors.green),
+            );
+          } else if (state is {{className}}ErrorState) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(state.message), backgroundColor: Colors.redAccent),
+            );
+          }
+        },
+        builder: (context, state) {
+          if (state is {{className}}LoadingState) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (state is {{classPlural}}LoadedState) {
+            final items = state.{{camelPlural}};
+            if (items.isEmpty) {
+              return Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.inbox_outlined, size: 64, color: Colors.grey[400]),
+                    const SizedBox(height: 12),
+                    Text(
+                      'No hay {{camelPlural}} registrados.',
+                      style: TextStyle(color: Colors.grey[600], fontSize: 16),
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            return RefreshIndicator(
+              onRefresh: () async {
+                context.read<{{className}}Bloc>().add(const Load{{classPlural}}Event());
+              },
+              child: ListView.builder(
+                itemCount: items.length,
+                itemBuilder: (context, index) {
+                  final item = items[index];
+                  return {{className}}CardWidget(
+                    item: item,
+                    onEdit: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => {{className}}FormPage(initialItem: item),
+                        ),
+                      );
+                    },
+                    onDelete: () => _confirmDelete(context, item.{{idFieldName}}.toString()),
+                  );
+                },
+              ),
+            );
+          }
+
+          return Center(
+            child: ElevatedButton.icon(
+              icon: const Icon(Icons.refresh),
+              label: const Text('Cargar de nuevo'),
+              onPressed: () {
+                context.read<{{className}}Bloc>().add(const Load{{classPlural}}Event());
+              },
+            ),
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        icon: const Icon(Icons.add),
+        label: const Text('Nuevo'),
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const {{className}}FormPage(),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}

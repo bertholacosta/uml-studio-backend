@@ -1,0 +1,450 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  UML Studio en AWS: frontend en S3 + CloudFront, API (NestJS + PostgreSQL + MongoDB en Docker)
+  en una EC2, imágenes en ECR y roles OIDC para que GitHub Actions despliegue sin claves.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: uml-studio
+    AllowedPattern: '^[a-z][a-z0-9-]{2,30}$'
+    Description: Prefijo de los recursos y ruta de Parameter Store (/<AppName>/...)
+  GitHubOwner:
+    Type: String
+    Description: Usuario u organización de GitHub dueña de los repositorios
+  BackendRepo:
+    Type: String
+    Default: uml-studio-backend
+  FrontendRepo:
+    Type: String
+    Default: uml-studio-frontend
+  ExistingGitHubOidcProviderArn:
+    Type: String
+    Default: ''
+    Description: >-
+      ARN del proveedor OIDC token.actions.githubusercontent.com si la cuenta ya lo tiene
+      (vacío = lo crea esta plantilla)
+  CloudFrontPrefixListId:
+    Type: String
+    AllowedPattern: '^pl-[0-9a-f]+$'
+    Description: >-
+      Lista de prefijos com.amazonaws.global.cloudfront.origin-facing de la región:
+      aws ec2 describe-managed-prefix-lists --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedValues: [t3.small, t3.medium, t3.large]
+    Description: EC2 de la API (PostgreSQL, MongoDB y Node en la misma máquina)
+  AiProvider:
+    Type: String
+    Default: ollama
+    AllowedValues: [ollama, gemini]
+  OllamaBaseUrl:
+    Type: String
+    Default: http://localhost:11434
+    Description: Servidor Ollama con el modelo trazo (p. ej. la IP privada de la EC2 con GPU)
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Conditions:
+  CreateOidcProvider: !Equals [!Ref ExistingGitHubOidcProviderArn, '']
+  IsUsEast1: !Equals [!Ref 'AWS::Region', us-east-1]
+
+Resources:
+  # ---------- GitHub Actions (OIDC: sin claves de AWS guardadas en GitHub) ----------
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList: [6938fd4d98bab03faadb97b34396831e3780aea1]
+
+  BackendDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AppName}-github-backend'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [CreateOidcProvider, !Ref GitHubOidcProvider, !Ref ExistingGitHubOidcProviderArn]
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                # Solo la rama main puede desplegar
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOwner}/${BackendRepo}:ref:refs/heads/main'
+      Policies:
+        - PolicyName: deploy-backend
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource: !GetAtt ApiRepository.Arn
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub '${DeployBucket.Arn}/*'
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${ApiInstance}'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript'
+              - Effect: Allow
+                Action:
+                  - ssm:GetCommandInvocation
+                  - ssm:ListCommandInvocations
+                Resource: '*'
+
+  FrontendDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AppName}-github-frontend'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [CreateOidcProvider, !Ref GitHubOidcProvider, !Ref ExistingGitHubOidcProviderArn]
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOwner}/${FrontendRepo}:ref:refs/heads/main'
+      Policies:
+        - PolicyName: deploy-frontend
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt SiteBucket.Arn
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource: !Sub '${SiteBucket.Arn}/*'
+              - Effect: Allow
+                Action: cloudfront:CreateInvalidation
+                Resource: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+
+  # ---------- Imágenes y paquetes de despliegue del backend ----------
+  ApiRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${AppName}-api'
+      EmptyOnDelete: true
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"description":"Conservar las 10 imagenes mas recientes",
+            "selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},
+            "action":{"type":"expire"}}]}
+
+  DeployBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: borrar-paquetes-antiguos
+            Status: Enabled
+            ExpirationInDays: 30
+
+  # ---------- API en EC2 (Docker Compose: api + postgres + mongo) ----------
+  ApiSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: API de UML Studio, accesible solo desde CloudFront
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          SourcePrefixListId: !Ref CloudFrontPrefixListId
+          Description: CloudFront hacia la API
+
+  ApiInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Systems Manager: despliegue por Run Command y acceso por Session Manager, sin SSH
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly'
+      Policies:
+        - PolicyName: runtime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [ssm:GetParametersByPath, ssm:GetParameters]
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AppName}/*'
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${DeployBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/${AppName}/*'
+
+  ApiInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref ApiInstanceRole]
+
+  ApiInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref ApiInstanceProfile
+      SecurityGroupIds: [!GetAtt ApiSecurityGroup.GroupId]
+      MetadataOptions:
+        HttpTokens: required
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AppName}-api'
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          dnf install -y docker
+          systemctl enable --now docker
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 \
+            -o /usr/local/lib/docker/cli-plugins/docker-compose
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+          # Memoria de intercambio: PostgreSQL, MongoDB y Node comparten la máquina
+          dd if=/dev/zero of=/swapfile bs=1M count=2048
+          chmod 600 /swapfile
+          mkswap /swapfile
+          swapon /swapfile
+          echo '/swapfile swap swap defaults 0 0' >> /etc/fstab
+          mkdir -p /opt/${AppName}
+
+  # IP fija: CloudFront apunta al nombre DNS público de esta IP
+  ApiIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref ApiInstance
+
+  # ---------- Frontend en S3 + CloudFront (y la API detrás del mismo dominio) ----------
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub '${SiteBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+
+  SiteOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AppName}-site'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Las rutas de Angular (/dashboard, /diagram...) no son archivos: se sirve index.html
+  SpaRewriteFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub '${AppName}-spa-rewrite'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Rutas de la SPA a index.html
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          if (request.uri.indexOf('.') === -1) {
+            request.uri = '/index.html';
+          }
+          return request;
+        }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub '${AppName}: frontend + API'
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        DefaultRootObject: index.html
+        Origins:
+          - Id: site
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt SiteOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+          - Id: api
+            DomainName: !If
+              - IsUsEast1
+              - !Sub
+                - 'ec2-${Dashed}.compute-1.amazonaws.com'
+                - Dashed: !Join ['-', !Split ['.', !Ref ApiIp]]
+              - !Sub
+                - 'ec2-${Dashed}.${AWS::Region}.compute.amazonaws.com'
+                - Dashed: !Join ['-', !Split ['.', !Ref ApiIp]]
+            CustomOriginConfig:
+              HTTPPort: 3000
+              OriginProtocolPolicy: http-only
+              # Trazo con un modelo local puede tardar: es el máximo sin pedir ampliación de cuota
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 60
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          # Managed-CachingOptimized
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt SpaRewriteFunction.FunctionMetadata.FunctionARN
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            Compress: true
+            # Managed-CachingDisabled y Managed-AllViewerExceptHostHeader
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          # Colaboración en tiempo real (Socket.IO por WebSocket)
+          - PathPattern: /socket.io/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+
+  # ---------- Configuración no secreta de la API (los secretos se crean a mano como SecureString) ----------
+  CorsOriginsParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${AppName}/CORS_ORIGINS'
+      Type: String
+      Value: !Sub 'https://${Distribution.DomainName}'
+  AiProviderParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${AppName}/AI_PROVIDER'
+      Type: String
+      Value: !Ref AiProvider
+  AiVisionProviderParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${AppName}/AI_VISION_PROVIDER'
+      Type: String
+      Value: gemini
+  OllamaBaseUrlParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${AppName}/OLLAMA_BASE_URL'
+      Type: String
+      Value: !Ref OllamaBaseUrl
+  OllamaModelParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${AppName}/OLLAMA_MODEL'
+      Type: String
+      Value: trazo
+  AiTimeoutParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${AppName}/AI_TIMEOUT_MS'
+      Type: String
+      # Por debajo de los 60 s que CloudFront espera a la API
+      Value: '55000'
+
+Outputs:
+  AppUrl:
+    Description: URL pública de UML Studio
+    Value: !Sub 'https://${Distribution.DomainName}'
+  AwsRegion:
+    Description: Variable AWS_REGION de ambos repositorios
+    Value: !Ref 'AWS::Region'
+  BackendRoleArn:
+    Description: Variable AWS_ROLE_ARN del repositorio del backend
+    Value: !GetAtt BackendDeployRole.Arn
+  FrontendRoleArn:
+    Description: Variable AWS_ROLE_ARN del repositorio del frontend
+    Value: !GetAtt FrontendDeployRole.Arn
+  EcrRepository:
+    Description: Variable ECR_REPOSITORY del backend
+    Value: !Ref ApiRepository
+  DeployBucket:
+    Description: Variable DEPLOY_BUCKET del backend
+    Value: !Ref DeployBucket
+  ApiInstanceId:
+    Description: Variable EC2_INSTANCE_ID del backend
+    Value: !Ref ApiInstance
+  ApiSecurityGroupId:
+    Description: Grupo de seguridad de la API (para permitirle el acceso a la EC2 con GPU de Ollama)
+    Value: !GetAtt ApiSecurityGroup.GroupId
+  SiteBucket:
+    Description: Variable SITE_BUCKET del frontend
+    Value: !Ref SiteBucket
+  DistributionId:
+    Description: Variable CLOUDFRONT_DISTRIBUTION_ID del frontend
+    Value: !Ref Distribution

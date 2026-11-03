@@ -1,0 +1,93 @@
+# 🚀 {{projectName}}
+
+Microservicio generado automáticamente por **UML Collaborative Studio & Code Generator** con arquitectura limpia en 5 capas, Gradle y Project Lombok:
+* **Entidades JPA:** Mapeo relacional con PostgreSQL y anotaciones Lombok (`@Getter`, `@Setter`, `@Builder`).
+* **Repositorios:** Spring Data JPA.
+* **Servicios de Negocio:** Servicios directos con `@Service`, soporte transaccional `@Transactional` e inyección `@RequiredArgsConstructor`.
+* **Controladores REST:** Endpoints CRUD documentados con OpenAPI / Swagger UI.
+* **DTOs:** Separación de Request / Response con validaciones Jakarta y `@Data`.
+* **Migraciones Flyway:** Creación de esquema y claves foráneas en `src/main/resources/db/migration/V1__create_tables.sql`.
+* **Gestor de Compilación:** Gradle con Java {{javaVer}}.
+
+---
+
+## 🛠 Requisitos Previos
+* **Java:** JDK {{javaVer}} (OpenJDK 17, 21 o 25)
+* **Gradle:** 8.14+ o 9.x (o usar `./gradlew`)
+* **Docker & Docker Compose** (para despliegue con contenedores)
+
+---
+
+## 🐳 Despliegue con Docker Compose
+
+El proyecto incluye **dos configuraciones de Docker Compose** según el flujo de trabajo deseado:
+
+### ⚡ Opción 1: Despliegue Local Rápido (Aprovecha Java y Gradle del Host)
+Solo necesitas Java instalado: el proyecto incluye el Gradle Wrapper (`./gradlew`), que descarga la versión correcta de Gradle y, si hace falta, el JDK de la toolchain:
+
+1. **Compilar el JAR en tu máquina local:**
+```bash
+./gradlew bootJar -x test
+# En Windows: gradlew.bat bootJar -x test
+```
+
+2. **Levantar base de datos PostgreSQL 18 y la aplicación:**
+```bash
+docker compose -f docker-compose.local.yml up --build
+```
+
+3. **O levantar únicamente la base de datos en Docker y ejecutar Spring Boot en el host:**
+```bash
+docker compose -f docker-compose.local.yml up -d db
+./gradlew bootRun
+```
+
+---
+
+### 🌐 Opción 2: Despliegue Autónomo desde Cero (Multi-stage en Docker)
+Ideal para entornos CI/CD o equipos sin Java instalado. Construye todo desde cero dentro de un contenedor:
+
+```bash
+docker compose up --build
+```
+
+---
+
+## 🌐 URLs y Servicios una vez iniciado:
+* **API REST Base:** http://localhost:{{srvPort}}/api/v1
+* **Swagger UI interactivo:** http://localhost:{{srvPort}}/swagger-ui.html
+* **OpenAPI JSON Spec:** http://localhost:{{srvPort}}/api-docs
+* **Base de Datos PostgreSQL:** \`localhost:{{dbPort}}\` (DB: \`{{databaseName}}\`)
+
+---
+
+## 💻 Ejecución Local con Gradle
+
+1. Inicia PostgreSQL 18 en el puerto {{dbPort}} con la base de datos `{{databaseName}}` (puedes usar `docker compose -f docker-compose.local.yml up -d db`).
+2. Ejecutar la aplicación:
+
+```bash
+./gradlew bootRun
+```
+
+3. Ejecutar pruebas unitarias:
+
+```bash
+./gradlew test
+```
+
+---
+
+## 📌 Endpoints Generados
+
+| Entidad | Endpoint Base | Operaciones CRUD |
+| :--- | :--- | :--- |
+{{#classes}}
+| **{{className}}** | `/api/v1/{{endpointPath}}` | GET (all), GET (by id), POST, PUT, DELETE |
+{{/classes}}
+
+---
+
+## 📖 Documentación Interactiva Swagger UI
+Para probar peticiones en vivo, interactuar con los endpoints y revisar los esquemas de datos:
+👉 http://localhost:{{srvPort}}/swagger-ui.html

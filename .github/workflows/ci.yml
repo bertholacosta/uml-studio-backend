@@ -1,0 +1,27 @@
+name: CI
+
+# En cada pull request; el despliegue de main lo reutiliza antes de publicar
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint, pruebas y compilación
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npx prettier --check "src/**/*.ts" "test/**/*.ts"
+      - run: npm test -- --ci
+      - run: npm run build

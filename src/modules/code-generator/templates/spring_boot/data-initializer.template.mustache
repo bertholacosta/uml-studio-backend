@@ -1,0 +1,42 @@
+package {{packageName}}.security;
+
+import {{packageName}}.entities.{{userClassName}};
+import {{packageName}}.repositories.{{userClassName}}Repository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Component;
+
+/**
+ * Inicializador automático de datos en el arranque de la aplicación generado con Lombok.
+ */
+@Component
+@RequiredArgsConstructor
+public class DataInitializer implements CommandLineRunner {
+
+    private final {{userClassName}}Repository userRepository;
+    private final PasswordEncoder passwordEncoder;
+
+    @Override
+    public void run(String... args) throws Exception {
+        userRepository.{{emailMethod}}("admin@studio.com").ifPresentOrElse(
+            admin -> {
+                admin.{{passSetter}}(passwordEncoder.encode("admin123"));
+                userRepository.save(admin);
+                System.out.println(">>> [DataInitializer] Contraseña del usuario administrador sincronizada: admin@studio.com / admin123");
+            },
+            () -> {
+                {{userClassName}} admin = new {{userClassName}}();
+                admin.{{emailSetter}}("admin@studio.com");
+                admin.{{passSetter}}(passwordEncoder.encode("admin123"));
+{{{adminSetters}}}
+                userRepository.save(admin);
+                System.out.println("==================================================================");
+                System.out.println(" [DataInitializer] Usuario administrador inicial creado con éxito:");
+                System.out.println("   - Email: admin@studio.com");
+                System.out.println("   - Password: admin123");
+                System.out.println("==================================================================");
+            }
+        );
+    }
+}

@@ -1,0 +1,70 @@
+package {{basePackage}}.controllers;
+
+{{#imports}}
+import {{.}};
+{{/imports}}
+import lombok.RequiredArgsConstructor;
+
+/**
+ * Controlador REST para la gestión de {{className}}.
+ * Integra documentación OpenAPI / Swagger UI interactiva y Lombok.
+ */
+@RestController
+@RequestMapping("/api/v1/{{endpointPath}}")
+@RequiredArgsConstructor
+@Tag(name = "{{className}}", description = "API REST y operaciones CRUD para {{className}}")
+@CrossOrigin(origins = "*", allowedHeaders = "*")
+public class {{className}}Controller {
+
+    private final {{className}}Service service;
+
+    @GetMapping
+    @Operation(summary = "Listar todos los registros de {{className}}")
+    @ApiResponse(responseCode = "200", description = "Lista recuperada exitosamente")
+    public ResponseEntity<List<{{className}}ResponseDto>> findAll() {
+        return ResponseEntity.ok(service.findAll());
+    }
+
+    @GetMapping("/{id}")
+    @Operation(summary = "Obtener un registro de {{className}} por su ID")
+    @ApiResponses(value = {
+        @ApiResponse(responseCode = "200", description = "Registro encontrado"),
+        @ApiResponse(responseCode = "404", description = "{{className}} no encontrado")
+    })
+    public ResponseEntity<{{className}}ResponseDto> findById(@PathVariable {{idType}} id) {
+        return ResponseEntity.ok(service.findById(id));
+    }
+
+    @PostMapping
+    @Operation(summary = "Crear un nuevo registro de {{className}}")
+    @ApiResponses(value = {
+        @ApiResponse(responseCode = "201", description = "{{className}} creado exitosamente"),
+        @ApiResponse(responseCode = "400", description = "Datos de entrada inválidos")
+    })
+    public ResponseEntity<{{className}}ResponseDto> create(@Valid @RequestBody Create{{className}}Dto dto) {
+        return new ResponseEntity<>(service.create(dto), HttpStatus.CREATED);
+    }
+
+    @PutMapping("/{id}")
+    @Operation(summary = "Actualizar un registro existente de {{className}}")
+    @ApiResponses(value = {
+        @ApiResponse(responseCode = "200", description = "{{className}} actualizado"),
+        @ApiResponse(responseCode = "404", description = "{{className}} no encontrado")
+    })
+    public ResponseEntity<{{className}}ResponseDto> update(
+            @PathVariable {{idType}} id,
+            @Valid @RequestBody Update{{className}}Dto dto) {
+        return ResponseEntity.ok(service.update(id, dto));
+    }
+
+    @DeleteMapping("/{id}")
+    @Operation(summary = "Eliminar un registro de {{className}}")
+    @ApiResponses(value = {
+        @ApiResponse(responseCode = "204", description = "{{className}} eliminado exitosamente"),
+        @ApiResponse(responseCode = "404", description = "{{className}} no encontrado")
+    })
+    public ResponseEntity<Void> delete(@PathVariable {{idType}} id) {
+        service.delete(id);
+        return ResponseEntity.noContent().build();
+    }
+}

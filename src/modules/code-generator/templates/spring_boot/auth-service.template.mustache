@@ -1,0 +1,46 @@
+package {{packageName}}.services;
+
+import {{packageName}}.dtos.auth.LoginRequestDto;
+import {{packageName}}.dtos.auth.RegisterRequestDto;
+import {{packageName}}.dtos.auth.AuthResponseDto;
+import {{packageName}}.dtos.{{userClassName}}ResponseDto;
+import {{packageName}}.entities.{{userClassName}};
+import {{packageName}}.repositories.{{userClassName}}Repository;
+import {{packageName}}.security.JwtTokenProvider;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+@Transactional
+@RequiredArgsConstructor
+public class AuthService {
+
+    private final {{userClassName}}Repository userRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final JwtTokenProvider tokenProvider;
+
+    public AuthResponseDto login(LoginRequestDto request) {
+        String identifier = request.getEmail();
+{{{lookupUser}}}
+
+        if (!passwordEncoder.matches(request.getPassword(), user.{{passGetter}}())) {
+            throw new BadCredentialsException("Credenciales inválidas");
+        }
+
+        String token = tokenProvider.generateToken(request.getEmail(), user.{{idGetter}}());
+        return new AuthResponseDto(token, {{userClassName}}ResponseDto.fromEntity(user));
+    }
+
+    public AuthResponseDto register(RegisterRequestDto request) {
+        {{userClassName}} user = new {{userClassName}}();
+{{{fieldSetters}}}
+        user.{{passSetter}}(passwordEncoder.encode(request.getPassword()));
+
+        {{userClassName}} saved = userRepository.save(user);
+        String token = tokenProvider.generateToken(request.getEmail(), saved.{{idGetter}}());
+        return new AuthResponseDto(token, {{userClassName}}ResponseDto.fromEntity(saved));
+    }
+}

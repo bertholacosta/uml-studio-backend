@@ -1,0 +1,14 @@
+import 'package:dartz/dartz.dart';
+import '../../../../core/errors/failures.dart';
+import '../entities/{{snake}}_entity.dart';
+import '../repositories/{{snake}}_repository.dart';
+
+class Create{{className}}UseCase {
+  final {{className}}Repository repository;
+
+  const Create{{className}}UseCase({required this.repository});
+
+  Future<Either<Failure, {{className}}Entity>> call({{className}}Entity entity) {
+    return repository.create(entity);
+  }
+}

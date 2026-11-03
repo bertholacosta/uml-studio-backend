@@ -1,0 +1,37 @@
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
+
+/// Constantes globales de configuración de red y endpoints para la API REST de Spring Boot.
+class ApiConstants {
+  // Para pruebas vía cable USB (adb reverse tcp:{{port}} tcp:{{port}}) o emuladores:
+  // - En Dispositivo Físico con USB 'adb reverse': usar 'http://localhost:{{port}}/api/v1'
+  // - En Emulador Android estándar: usar 'http://10.0.2.2:{{port}}/api/v1'
+  // - En iOS Simulator / Web / Desktop: usar 'http://localhost:{{port}}/api/v1'
+  
+  static String get baseUrl {
+    if (kIsWeb) {
+      return 'http://localhost:{{port}}/api/v1';
+    }
+    if (Platform.isAndroid) {
+      // Si utilizas 'adb reverse tcp:{{port}} tcp:{{port}}' desde tu PC por cable USB:
+      return 'http://localhost:{{port}}/api/v1';
+      // Si utilizas el emulador de Android Studio sin adb reverse, descomenta:
+      // return 'http://10.0.2.2:{{port}}/api/v1';
+    }
+    return 'http://localhost:{{port}}/api/v1';
+  }
+
+  static const int connectTimeout = 15000;
+  static const int receiveTimeout = 15000;
+
+  // Endpoints REST de las entidades
+{{#entityEndpoints}}
+  static const String {{camelName}}Endpoint = '{{path}}';
+{{/entityEndpoints}}
+{{#hasAuth}}
+
+  // Endpoints de Autenticación
+  static const String authLoginEndpoint = '/auth/login';
+  static const String authRegisterEndpoint = '/auth/register';
+{{/hasAuth}}
+}

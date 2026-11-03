@@ -1,0 +1,159 @@
+import 'dart:io';
+import 'dart:async';
+import 'package:dio/dio.dart';
+import 'package:path_provider/path_provider.dart';
+
+/// Service responsible for downloading and managing the local LLM model file.
+class ModelDownloaderService {
+  static const String modelFileName = 'qwen2.5-0.5b-instruct-q4_k_m.gguf';
+  static const String modelUrl = 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf';
+  static const int expectedFileSizeBytes = 397000000;
+
+  final Dio _dio;
+
+  ModelDownloaderService({Dio? dio}) : _dio = dio ?? Dio();
+
+  /// Gets the directory where models are stored.
+  Future<Directory> _getModelsDirectory() async {
+    final docsDir = await getApplicationDocumentsDirectory();
+    final modelsDir = Directory('${docsDir.path}/models');
+    if (!await modelsDir.exists()) {
+      await modelsDir.create(recursive: true);
+    }
+    return modelsDir;
+  }
+
+  /// Returns the path to the model if it's already downloaded and verified, null otherwise.
+  Future<String?> getModelPath() async {
+    if (await isModelDownloaded()) {
+      final modelsDir = await _getModelsDirectory();
+      return '${modelsDir.path}/$modelFileName';
+    }
+    return null;
+  }
+
+  /// Checks if the model file exists and has a reasonable size.
+  Future<bool> isModelDownloaded() async {
+    final modelsDir = await _getModelsDirectory();
+    final file = File('${modelsDir.path}/$modelFileName');
+    
+    if (await file.exists()) {
+      final size = await file.length();
+      // Using a reasonable threshold (90% of expected size) to verify it's not a corrupted/empty file
+      if (size > (expectedFileSizeBytes * 0.9)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Returns the size of the downloaded model in MB, or 0 if not downloaded.
+  Future<int> getModelSizeMB() async {
+    final modelsDir = await _getModelsDirectory();
+    final file = File('${modelsDir.path}/$modelFileName');
+    
+    if (await file.exists()) {
+      final sizeBytes = await file.length();
+      return sizeBytes ~/ (1024 * 1024);
+    }
+    return 0;
+  }
+
+  /// Deletes the cached model file and any temporary downloading files.
+  Future<void> deleteModel() async {
+    final modelsDir = await _getModelsDirectory();
+    final file = File('${modelsDir.path}/$modelFileName');
+    final tempFile = File('${modelsDir.path}/$modelFileName.downloading');
+
+    if (await file.exists()) {
+      await file.delete();
+    }
+    if (await tempFile.exists()) {
+      await tempFile.delete();
+    }
+  }
+
+  /// Downloads the model with resume support and progress reporting.
+  /// Uses a `.downloading` file during the process.
+  Future<String> downloadModel({required void Function(double progress) onProgress}) async {
+    final modelsDir = await _getModelsDirectory();
+    final finalFile = File('${modelsDir.path}/$modelFileName');
+    final tempFile = File('${modelsDir.path}/$modelFileName.downloading');
+
+    // If already fully downloaded, report complete and return path
+    if (await isModelDownloaded()) {
+      onProgress(1.0);
+      return finalFile.path;
+    }
+
+    int downloadedBytes = 0;
+    if (await tempFile.exists()) {
+      downloadedBytes = await tempFile.length();
+    }
+
+    final options = Options(
+      responseType: ResponseType.stream,
+      headers: {
+        'Accept-Encoding': 'gzip',
+      },
+    );
+
+    // Support resuming download if a partial temp file exists
+    if (downloadedBytes > 0) {
+      options.headers?['Range'] = 'bytes=$downloadedBytes-';
+    }
+
+    try {
+      final response = await _dio.get<ResponseBody>(
+        modelUrl,
+        options: options,
+      );
+
+      final contentLengthHeader = response.headers.value(HttpHeaders.contentLengthHeader) ?? '';
+      final newBytesToDownload = int.tryParse(contentLengthHeader) ?? 0;
+      final totalBytes = newBytesToDownload > 0 ? (newBytesToDownload + downloadedBytes) : expectedFileSizeBytes;
+      
+      final sink = tempFile.openWrite(mode: downloadedBytes > 0 ? FileMode.append : FileMode.write);
+      final stream = response.data?.stream;
+      
+      if (stream != null) {
+        await for (final chunk in stream) {
+          sink.add(chunk);
+          downloadedBytes += chunk.length;
+          
+          if (totalBytes > 0) {
+            final progress = (downloadedBytes / totalBytes).clamp(0.0, 1.0);
+            onProgress(progress);
+          } else {
+            // Fallback progress based on expected size if total size is missing
+            onProgress((downloadedBytes / expectedFileSizeBytes).clamp(0.0, 1.0));
+          }
+        }
+      }
+
+      await sink.close();
+
+      // Rename temporary file to final model name upon completion
+      if (await tempFile.exists()) {
+        await tempFile.rename(finalFile.path);
+      }
+      
+      onProgress(1.0);
+      return finalFile.path;
+      
+    } on DioException catch (e) {
+      // 416 Range Not Satisfiable means the range requested is invalid, 
+      // possibly because the file changed or is already fully downloaded.
+      if (e.response?.statusCode == 416) {
+        if (await tempFile.exists()) {
+           await tempFile.delete();
+        }
+        // Retry the download from scratch
+        return downloadModel(onProgress: onProgress);
+      }
+      rethrow;
+    } catch (e) {
+      rethrow;
+    }
+  }
+}

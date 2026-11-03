@@ -1,0 +1,51 @@
+services:
+  # =========================================================================
+  # BASE DE DATOS POSTGRESQL 18 (BUILD AUTÓNOMO)
+  # =========================================================================
+  db:
+    image: postgres:18-alpine
+    container_name: {{artifactId}}-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: {{databaseName}}
+      POSTGRES_USER: {{databaseUser}}
+      POSTGRES_PASSWORD: {{databasePassword}}
+    ports:
+      - "{{databasePort}}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{databaseUser}} -d {{databaseName}}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # =========================================================================
+  # APLICACIÓN SPRING BOOT (MICROSERVICIO CON GRADLE)
+  # =========================================================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: {{artifactId}}-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: {{serverPort}}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: {{databaseName}}
+      DB_USER: {{databaseUser}}
+      DB_PASS: {{databasePassword}}
+{{#hasAuth}}
+      JWT_SECRET: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
+      JWT_EXPIRATION: 86400000
+{{/hasAuth}}
+    ports:
+      - "{{serverPort}}:{{serverPort}}"
+
+volumes:
+  pgdata:
+    driver: local

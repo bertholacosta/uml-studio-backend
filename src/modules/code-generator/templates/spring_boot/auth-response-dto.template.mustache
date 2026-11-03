@@ -1,0 +1,28 @@
+package {{packageName}}.dtos.auth;
+
+import {{packageName}}.dtos.{{userClassName}}ResponseDto;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+
+/**
+ * DTO de respuesta con token JWT y datos del usuario generado con Lombok.
+ */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class AuthResponseDto {
+
+    private String token;
+    @Builder.Default
+    private String tokenType = "Bearer";
+    private {{userClassName}}ResponseDto user;
+
+    public AuthResponseDto(String token, {{userClassName}}ResponseDto user) {
+        this.token = token;
+        this.tokenType = "Bearer";
+        this.user = user;
+    }
+}

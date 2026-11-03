@@ -1,0 +1,53 @@
+services:
+  # =========================================================================
+  # BASE DE DATOS POSTGRESQL 18 (ENTORNO LOCAL)
+  # Permite conectar tanto la app en contenedor como gradle bootRun del host
+  # =========================================================================
+  db:
+    image: postgres:18-alpine
+    container_name: {{artifactId}}-db-local
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: {{databaseName}}
+      POSTGRES_USER: {{databaseUser}}
+      POSTGRES_PASSWORD: {{databasePassword}}
+    ports:
+      - "{{databasePort}}:5432"
+    volumes:
+      - pgdata_local:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{databaseUser}} -d {{databaseName}}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # =========================================================================
+  # APLICACIÓN SPRING BOOT (APROVECHA JAR COMPILADO CON JAVA/GRADLE DEL HOST)
+  # Requiere compilar previamente en el host: gradle bootJar -x test
+  # =========================================================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    container_name: {{artifactId}}-app-local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: {{serverPort}}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: {{databaseName}}
+      DB_USER: {{databaseUser}}
+      DB_PASS: {{databasePassword}}
+{{#hasAuth}}
+      JWT_SECRET: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
+      JWT_EXPIRATION: 86400000
+{{/hasAuth}}
+    ports:
+      - "{{serverPort}}:{{serverPort}}"
+
+volumes:
+  pgdata_local:
+    driver: local

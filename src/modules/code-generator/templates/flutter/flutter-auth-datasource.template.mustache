@@ -1,0 +1,66 @@
+import 'dart:convert';
+import '../../../../core/network/api_client.dart';
+import '../../../../core/errors/exceptions.dart';
+import '../../../../core/services/token_storage_service.dart';
+import '../models/auth_models.dart';
+
+abstract class AuthRemoteDataSource {
+  Future<AuthResponseModel> login(LoginRequestModel request);
+  Future<AuthResponseModel> register(RegisterRequestModel request);
+  Future<void> logout();
+}
+
+class AuthRemoteDataSourceImpl implements AuthRemoteDataSource {
+  final ApiClient apiClient;
+
+  AuthRemoteDataSourceImpl({required this.apiClient});
+
+  @override
+  Future<AuthResponseModel> login(LoginRequestModel request) async {
+    final response = await apiClient.post(
+      '/auth/login',
+      data: request.toJson(),
+    );
+
+    if (response.statusCode == 200 && response.data != null) {
+      final authModel = AuthResponseModel.fromJson(response.data as Map<String, dynamic>);
+      await TokenStorageService.saveToken(authModel.token);
+      if (authModel.user != null) {
+        await TokenStorageService.saveUserData(jsonEncode(authModel.user!.toJson()));
+      }
+      return authModel;
+    } else {
+      throw ServerException(
+        message: 'Credenciales inválidas',
+        statusCode: response.statusCode,
+      );
+    }
+  }
+
+  @override
+  Future<AuthResponseModel> register(RegisterRequestModel request) async {
+    final response = await apiClient.post(
+      '/auth/register',
+      data: request.toJson(),
+    );
+
+    if ((response.statusCode == 200 || response.statusCode == 201) && response.data != null) {
+      final authModel = AuthResponseModel.fromJson(response.data as Map<String, dynamic>);
+      await TokenStorageService.saveToken(authModel.token);
+      if (authModel.user != null) {
+        await TokenStorageService.saveUserData(jsonEncode(authModel.user!.toJson()));
+      }
+      return authModel;
+    } else {
+      throw ServerException(
+        message: 'No se pudo completar el registro',
+        statusCode: response.statusCode,
+      );
+    }
+  }
+
+  @override
+  Future<void> logout() async {
+    await TokenStorageService.clear();
+  }
+}

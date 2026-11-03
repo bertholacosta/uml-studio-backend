@@ -1,0 +1,9 @@
+# Finales de línea Unix en todo el repositorio, sin importar el sistema de quien lo clone
+* text=auto eol=lf
+# Los scripts de Windows (gradlew.bat del generador) necesitan CRLF
+*.bat text eol=crlf
+
+# Binarios
+*.jar binary
+*.png binary
+*.ico binary
