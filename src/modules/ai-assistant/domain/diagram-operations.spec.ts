@@ -2,6 +2,7 @@ import {
   applyOperations,
   dropUnrequestedOperations,
   DiagramOperation,
+  fixUnrequestedManyToMany,
 } from './diagram-operations';
 import { resolveManyToManyRelationships } from './many-to-many.resolver';
 import { UmlClassNode, UmlConnection } from './uml-diagram.types';
@@ -280,5 +281,56 @@ describe('dropUnrequestedOperations', () => {
       'agrega una tabla usuario y relaciónala muchos a muchos con Products',
     );
     expect(ops).toHaveLength(3);
+  });
+});
+
+describe('fixUnrequestedManyToMany', () => {
+  const manyToMany = (source: string, target: string): DiagramOperation => ({
+    op: 'add_relation',
+    source,
+    target,
+    type: 'association',
+    sourceMultiplicity: '*',
+    targetMultiplicity: '*',
+  });
+
+  it('convierte en uno a muchos «una Categoria tiene muchos productos»', () => {
+    const [relation] = fixUnrequestedManyToMany(
+      [manyToMany('Categoria', 'Producto')],
+      'Crea la clase Producto con nombre, precio y stock. Una Categoria tiene muchos productos.',
+    );
+    expect(relation).toMatchObject({
+      source: 'Categoria',
+      sourceMultiplicity: '1',
+      targetMultiplicity: '*',
+    });
+  });
+
+  it('detecta el lado «muchos» aunque el modelo invierta origen y destino', () => {
+    const [relation] = fixUnrequestedManyToMany(
+      [manyToMany('Pedido', 'Cliente')],
+      'Un cliente tiene muchos pedidos',
+    );
+    expect(relation).toMatchObject({
+      source: 'Pedido',
+      sourceMultiplicity: '*',
+      targetMultiplicity: '1',
+    });
+  });
+
+  it.each([
+    'Relaciona Alumno con Curso muchos a muchos',
+    'Un alumno cursa muchos cursos y un curso tiene muchos alumnos',
+    'Alumno M:N Curso',
+  ])('respeta el muchos a muchos pedido: %s', (prompt) => {
+    const ops = [manyToMany('Alumno', 'Curso')];
+    expect(fixUnrequestedManyToMany(ops, prompt)).toEqual(ops);
+  });
+
+  it('no toca la relación si el mensaje no dice qué lado es «muchos»', () => {
+    const ops = [manyToMany('Pedido', 'Producto')];
+    expect(
+      fixUnrequestedManyToMany(ops, 'Relaciona Pedido con Producto'),
+    ).toEqual(ops);
   });
 });

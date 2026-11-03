@@ -11,8 +11,17 @@ Uso, desde la carpeta del backend (con `pip install modal` y `modal setup` hecho
     modal deploy ollama/modal_app.py         # publica la URL; va en OLLAMA_BASE_URL
 
 Para cambiar de modelo base, edita FROM en ollama/Modelfile y vuelve a ejecutar prepare.
+Mientras se prueba con poco crédito conviene apagar antes la GPU:
+
+    TRAZO_IDLE_MINUTES=1 modal deploy ollama/modal_app.py
+
+Modal solo permite GPU con una tarjeta registrada; sin ella se puede probar todo en CPU:
+
+    TRAZO_GPU=cpu modal run ollama/modal_app.py::prepare
+    TRAZO_GPU=cpu TRAZO_IDLE_MINUTES=1 modal deploy ollama/modal_app.py
 """
 
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -23,10 +32,14 @@ MODEL_NAME = "trazo"
 MODELS_DIR = "/models"
 MODELFILE = "/root/Modelfile"
 OLLAMA_PORT = 11434
-# T4 (16 GB) sobra para un 7B cuantizado y es la GPU que más estira el crédito gratuito
-GPU = "T4"
-# Minutos que el contenedor sigue encendido tras la última petición
-IDLE_MINUTES = 5
+# T4 (16 GB) sobra para un 7B cuantizado y es la GPU que más estira el crédito.
+# TRAZO_GPU=cpu sirve el modelo en CPU: más lento, pero no exige registrar una tarjeta en Modal
+GPU = os.environ.get("TRAZO_GPU", "T4")
+SERVE_RESOURCES = (
+    {"cpu": 8, "memory": 12288} if GPU.lower() == "cpu" else {"gpu": GPU}
+)
+# Minutos que el contenedor sigue encendido (y cobrando) tras la última petición
+IDLE_MINUTES = int(os.environ.get("TRAZO_IDLE_MINUTES", "5"))
 
 models = modal.Volume.from_name("trazo-models", create_if_missing=True)
 
@@ -57,7 +70,8 @@ def start_ollama() -> subprocess.Popen:
     raise RuntimeError("Ollama no arrancó")
 
 
-@app.function(gpu=GPU, volumes={MODELS_DIR: models}, timeout=1800)
+# Descargar y crear el modelo no necesita GPU: en CPU cuesta una fracción
+@app.function(cpu=2, memory=4096, volumes={MODELS_DIR: models}, timeout=1800)
 def prepare() -> None:
     """Descarga el modelo base y crea «trazo» a partir del Modelfile, en el volumen persistente."""
     start_ollama()
@@ -70,15 +84,10 @@ def prepare() -> None:
     subprocess.run(["ollama", "create", MODEL_NAME, "-f", MODELFILE], check=True)
     subprocess.run(["ollama", "list"], check=True)
     models.commit()
-    # Prueba rápida en la GPU
-    subprocess.run(
-        ["ollama", "run", MODEL_NAME, "Explica en una frase qué es un atributo derivado en UML."],
-        check=True,
-    )
 
 
 @app.function(
-    gpu=GPU,
+    **SERVE_RESOURCES,
     volumes={MODELS_DIR: models},
     scaledown_window=IDLE_MINUTES * 60,
     timeout=600,

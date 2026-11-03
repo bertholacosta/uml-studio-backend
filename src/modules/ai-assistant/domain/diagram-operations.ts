@@ -80,6 +80,53 @@ export function dropUnrequestedOperations(
   });
 }
 
+const MANY_MULTIPLICITY = /^(?:\*|[01]\.\.\*|[nm]|\d+\.\.[nm*])$/i;
+const MANY_WORD =
+  /\b(?:much[oa]s?|vari[oa]s?|m[uú]ltiples|many)\b(?:\s+(\p{L}[\p{L}\d_]*))?/giu;
+const EXPLICIT_MANY_TO_MANY =
+  /(?:much[oa]s?|vari[oa]s?)\s+a\s+(?:much[oa]s?|vari[oa]s?)|\b[nm]\s*[:a]\s*[nm]\b|\*\s*(?:a|:|-+)\s*\*|many[\s-]+to[\s-]+many/i;
+
+/**
+ * Salvaguarda: los modelos pequeños convierten «una Categoria tiene muchos productos» en una
+ * relación muchos a muchos. Si el mensaje no la pide (ni dice «muchos a muchos» ni menciona
+ * «muchos» en los dos sentidos), la relación pasa a uno a muchos: el lado «muchos» es la
+ * clase que sigue a «muchos/muchas/varios» en el mensaje.
+ */
+export function fixUnrequestedManyToMany(
+  operations: DiagramOperation[],
+  prompt: string,
+): DiagramOperation[] {
+  const manyMentions = [...prompt.matchAll(MANY_WORD)];
+  if (EXPLICIT_MANY_TO_MANY.test(prompt) || manyMentions.length !== 1) {
+    return operations;
+  }
+  const manyWord = normalizeForFuzzy(manyMentions[0][1] || '');
+  const isManySide = (className: string) => {
+    const name = normalizeForFuzzy(className);
+    return (
+      !!manyWord &&
+      !!name &&
+      (manyWord.startsWith(name) || name.startsWith(manyWord))
+    );
+  };
+
+  return operations.map((o) => {
+    if (
+      (o.op !== 'add_relation' && o.op !== 'update_relation') ||
+      !MANY_MULTIPLICITY.test(o.sourceMultiplicity || '') ||
+      !MANY_MULTIPLICITY.test(o.targetMultiplicity || '')
+    ) {
+      return o;
+    }
+    const sourceIsMany = isManySide(o.source);
+    const targetIsMany = isManySide(o.target);
+    if (sourceIsMany === targetIsMany) return o;
+    return sourceIsMany
+      ? { ...o, targetMultiplicity: '1' }
+      : { ...o, sourceMultiplicity: '1' };
+  });
+}
+
 /** Aplica las operaciones sobre una copia del diagrama. */
 export function applyOperations(
   currentNodes: UmlClassNode[],

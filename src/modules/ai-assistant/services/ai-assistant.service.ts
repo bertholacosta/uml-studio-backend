@@ -46,6 +46,7 @@ import {
   DiagramOperation,
   applyOperations,
   dropUnrequestedOperations,
+  fixUnrequestedManyToMany,
 } from '../domain/diagram-operations';
 import { resolveManyToManyRelationships } from '../domain/many-to-many.resolver';
 import {
@@ -313,8 +314,9 @@ export class AiAssistantService {
         schema: MENTOR_RESPONSE_SCHEMA,
       });
       const parsed = parseModelJson(generated.text);
+      // Se corrigen antes de aplicarlas o guardarlas como propuesta
       const operations: DiagramOperation[] = Array.isArray(parsed.operations)
-        ? parsed.operations
+        ? fixUnrequestedManyToMany(parsed.operations, prompt)
         : [];
       let intent = this.intentOf(parsed, operations);
       // Con especificaciones concretas no se pide aclaración: se aplica lo que haya
@@ -343,6 +345,7 @@ export class AiAssistantService {
       if (intent === 'edit') {
         const edited = this.applyModelEdit(
           parsed,
+          operations,
           prompt,
           currentNodes,
           currentConnections,
@@ -629,6 +632,7 @@ export class AiAssistantService {
    */
   private applyModelEdit(
     parsed: any,
+    operations: DiagramOperation[],
     prompt: string,
     nodes: UmlClassNode[],
     connections: UmlConnection[],
@@ -637,7 +641,7 @@ export class AiAssistantService {
       const result = applyOperations(
         nodes,
         connections,
-        dropUnrequestedOperations(parsed.operations, prompt),
+        dropUnrequestedOperations(operations, prompt),
       );
       if (result.skipped.length) {
         this.logger.warn(
