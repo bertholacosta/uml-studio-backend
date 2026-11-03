@@ -790,6 +790,34 @@ describe('AiAssistantService', () => {
       currentConnections: [],
     };
 
+    it('acepta el mensaje y lo difunde sin esperar a que responda el modelo', async () => {
+      let answer!: (value: { text: string; model: string }) => void;
+      aiProvider.generate.mockReturnValueOnce(
+        new Promise((resolve) => (answer = resolve)),
+      );
+
+      const { userMessage, result } = await service.submitTextPrompt(
+        { ...baseDto, clientId: 'c-1' },
+        ana,
+      );
+      expect(userMessage).toMatchObject({ role: 'user', clientId: 'c-1' });
+      expect(collaborationGateway.emitToDiagram).toHaveBeenCalledWith(
+        'diag-123',
+        'ai_message',
+        expect.objectContaining({ role: 'user' }),
+      );
+
+      answer({
+        text: JSON.stringify({
+          reply: 'Ana, ok',
+          intent: 'answer',
+          operations: [],
+        }),
+        model: 'trazo-test',
+      });
+      await expect(result).resolves.toMatchObject({ action: 'answer' });
+    });
+
     it('rechaza a quien no es miembro sin llamar al modelo', async () => {
       access.assertDiagramAccess.mockRejectedValueOnce(
         new ForbiddenException(),

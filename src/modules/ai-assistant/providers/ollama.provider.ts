@@ -9,7 +9,7 @@ import {
 
 const DEFAULT_BASE_URL = 'http://localhost:11434';
 const DEFAULT_MODEL = 'trazo';
-// Un modelo local tarda más que una API en la nube, sobre todo en la primera carga
+// Un modelo propio tarda más que una API en la nube, sobre todo si su servidor estaba apagado
 const DEFAULT_TIMEOUT_MS = 180_000;
 
 interface OllamaChatResponse {
@@ -22,8 +22,9 @@ interface OllamaChatResponse {
 
 /**
  * Modelo open-source servido con Ollama (API nativa /api/chat).
- * El servidor puede ser el propio equipo, un servidor controlado por el equipo o un
- * cuaderno de Google Colab expuesto con un túnel: basta con cambiar OLLAMA_BASE_URL.
+ * El servidor puede ser el propio equipo, un servidor controlado por el equipo, una GPU sin
+ * servidor en Modal (ollama/modal_app.py) o un cuaderno de Google Colab expuesto con un
+ * túnel: basta con cambiar OLLAMA_BASE_URL.
  * Con un esquema JSON en la petición, Ollama restringe la salida a ese esquema
  * (salida estructurada), lo que hace fiables las respuestas de modelos pequeños.
  */
@@ -33,7 +34,7 @@ export class OllamaProvider implements AiProvider {
   private readonly baseUrl: string;
   private readonly model: string;
   private readonly visionModel?: string;
-  private readonly apiKey?: string;
+  private readonly authHeaders: Record<string, string>;
   private readonly timeoutMs: number;
   private readonly numCtx?: number;
   private readonly keepAlive: string;
@@ -45,7 +46,17 @@ export class OllamaProvider implements AiProvider {
     ).replace(/\/+$/, '');
     this.model = config.get<string>('OLLAMA_MODEL') || DEFAULT_MODEL;
     this.visionModel = config.get<string>('OLLAMA_VISION_MODEL') || undefined;
-    this.apiKey = config.get<string>('OLLAMA_API_KEY') || undefined;
+    const apiKey = config.get<string>('OLLAMA_API_KEY');
+    const modalKey = config.get<string>('MODAL_KEY');
+    const modalSecret = config.get<string>('MODAL_SECRET');
+    this.authHeaders = {
+      // Proxy propio con token
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      // Tokens de proxy de Modal: sin ellos Modal rechaza la petición
+      ...(modalKey && modalSecret
+        ? { 'Modal-Key': modalKey, 'Modal-Secret': modalSecret }
+        : {}),
+    };
     this.timeoutMs =
       Number(config.get<string>('AI_TIMEOUT_MS')) || DEFAULT_TIMEOUT_MS;
     this.numCtx = Number(config.get<string>('OLLAMA_NUM_CTX')) || undefined;
@@ -109,7 +120,7 @@ export class OllamaProvider implements AiProvider {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+          ...this.authHeaders,
         },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(this.timeoutMs),
@@ -126,6 +137,11 @@ export class OllamaProvider implements AiProvider {
       .json()
       .catch(() => ({}))) as OllamaChatResponse;
     if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(
+          `El servidor de IA rechazó las credenciales (HTTP ${response.status}): revisa MODAL_KEY y MODAL_SECRET u OLLAMA_API_KEY`,
+        );
+      }
       if (response.status === 404) {
         throw new Error(
           `El servidor de IA no tiene el modelo «${model}». Créalo con: ollama create ${model} -f ollama/Modelfile (o descárgalo con ollama pull)`,

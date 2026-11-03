@@ -23,6 +23,7 @@ import { AiAssistantService } from '../services/ai-assistant.service';
 import { AiPromptDto, AiVisionPromptDto } from '../dtos/ai-request.dto';
 import { AiResponseDto } from '../dtos/ai-response.dto';
 import {
+  AiAcceptedDto,
   ApplyProposalDto,
   ConversationDto,
   ConversationQueryDto,
@@ -74,15 +75,17 @@ export class AiAssistantController {
   }
 
   @Post('prompt')
-  @HttpCode(HttpStatus.OK)
+  @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({
     summary:
       'Pregunta o instrucción a Trazo: responde como mentor, propone cambios o edita el diagrama',
+    description:
+      'Devuelve al instante el mensaje guardado; la respuesta de Trazo (y el diagrama modificado, si lo hay) llega a toda la pizarra por Socket.IO: eventos ai_message y diagram_synced.',
   })
   @ApiResponse({
-    status: 200,
-    description: 'Respuesta, propuesta, diagrama modificado o aclaración',
-    type: AiResponseDto,
+    status: 202,
+    description: 'Mensaje aceptado y en la cola de Trazo',
+    type: AiAcceptedDto,
   })
   @ApiResponse({
     status: 403,
@@ -91,8 +94,12 @@ export class AiAssistantController {
   async processPrompt(
     @Body() dto: AiPromptDto,
     @CurrentUser() user: User,
-  ): Promise<AiResponseDto> {
-    return this.aiAssistantService.processTextPrompt(dto, user);
+  ): Promise<AiAcceptedDto> {
+    const { userMessage } = await this.aiAssistantService.submitTextPrompt(
+      dto,
+      user,
+    );
+    return { status: 'queued', userMessage };
   }
 
   @Post('messages/:messageId/apply')
@@ -112,15 +119,17 @@ export class AiAssistantController {
   }
 
   @Post('vision-diagram')
-  @HttpCode(HttpStatus.OK)
+  @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({
     summary:
       'Trazo digitaliza un diagrama UML desde una imagen (foto, pizarra o captura)',
+    description:
+      'Devuelve al instante; el diagrama digitalizado llega por Socket.IO como en /ai/prompt.',
   })
   @ApiResponse({
-    status: 200,
-    description: 'Diagrama digitalizado con clases, atributos y relaciones',
-    type: AiResponseDto,
+    status: 202,
+    description: 'Imagen aceptada y en la cola de Trazo',
+    type: AiAcceptedDto,
   })
   @ApiResponse({
     status: 403,
@@ -129,7 +138,11 @@ export class AiAssistantController {
   async processVisionDiagram(
     @Body() dto: AiVisionPromptDto,
     @CurrentUser() user: User,
-  ): Promise<AiResponseDto> {
-    return this.aiAssistantService.processVisionDiagram(dto, user);
+  ): Promise<AiAcceptedDto> {
+    const { userMessage } = await this.aiAssistantService.submitVisionDiagram(
+      dto,
+      user,
+    );
+    return { status: 'queued', userMessage };
   }
 }

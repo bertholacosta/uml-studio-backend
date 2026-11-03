@@ -10,8 +10,8 @@ describe('AiAssistantController', () => {
 
   beforeEach(async () => {
     const mockService = {
-      processTextPrompt: jest.fn(),
-      processVisionDiagram: jest.fn(),
+      submitTextPrompt: jest.fn(),
+      submitVisionDiagram: jest.fn(),
       getConversation: jest.fn(),
       applyProposal: jest.fn(),
     };
@@ -29,47 +29,39 @@ describe('AiAssistantController', () => {
     expect(controller).toBeDefined();
   });
 
-  it('POST /prompt debe delegar a processTextPrompt', async () => {
-    const dto = {
-      prompt: 'Crea tabla Pago',
-      diagramId: 'd-1',
-    };
-    const mockResponse = {
-      success: true,
-      action: 'diagram_mutated',
-      message: 'Tabla Pago creada',
-      nodes: [],
-      connections: [],
-      changesSummary: 'Pago creado',
-    };
+  it('POST /prompt acepta el mensaje al instante sin esperar a Trazo', async () => {
+    const dto = { prompt: 'Crea tabla Pago', diagramId: 'd-1' };
+    const userMessage = { id: 'm-1', text: 'Crea tabla Pago' } as any;
+    // La respuesta del modelo nunca llega: el controlador no debe esperarla
+    service.submitTextPrompt.mockResolvedValue({
+      userMessage,
+      result: new Promise(() => undefined),
+    });
 
-    service.processTextPrompt.mockResolvedValue(mockResponse);
-
-    const result = await controller.processPrompt(dto, user);
-    expect(result).toEqual(mockResponse);
-    expect(service.processTextPrompt).toHaveBeenCalledWith(dto, user);
+    await expect(controller.processPrompt(dto, user)).resolves.toEqual({
+      status: 'queued',
+      userMessage,
+    });
+    expect(service.submitTextPrompt).toHaveBeenCalledWith(dto, user);
   });
 
-  it('POST /vision-diagram debe delegar a processVisionDiagram', async () => {
+  it('POST /vision-diagram acepta la imagen y responde por el socket', async () => {
     const dto = {
       imageBase64: 'base64str',
       mimeType: 'image/png',
       diagramId: 'd-1',
     };
-    const mockResponse = {
-      success: true,
-      action: 'vision_extract',
-      message: 'Digitalización completada',
-      nodes: [],
-      connections: [],
-      changesSummary: 'Clases extraídas',
-    };
+    const userMessage = { id: 'm-2' } as any;
+    service.submitVisionDiagram.mockResolvedValue({
+      userMessage,
+      result: new Promise(() => undefined),
+    });
 
-    service.processVisionDiagram.mockResolvedValue(mockResponse);
-
-    const result = await controller.processVisionDiagram(dto, user);
-    expect(result).toEqual(mockResponse);
-    expect(service.processVisionDiagram).toHaveBeenCalledWith(dto, user);
+    await expect(controller.processVisionDiagram(dto, user)).resolves.toEqual({
+      status: 'queued',
+      userMessage,
+    });
+    expect(service.submitVisionDiagram).toHaveBeenCalledWith(dto, user);
   });
 
   it('GET /diagrams/:id/conversation devuelve la conversación compartida', async () => {

@@ -14,7 +14,11 @@ import { ProjectAccessService } from '../../projects/services/project-access.ser
 import { ProjectRole } from '../../projects/entities/project-role.enum';
 import { AiPromptDto, AiVisionPromptDto } from '../dtos/ai-request.dto';
 import { AiResponseDto } from '../dtos/ai-response.dto';
-import { ApplyProposalDto, ConversationDto } from '../dtos/ai-chat.dto';
+import {
+  ApplyProposalDto,
+  ChatMessageDto,
+  ConversationDto,
+} from '../dtos/ai-chat.dto';
 import {
   AI_PROVIDER,
   AI_VISION_PROVIDER,
@@ -59,6 +63,12 @@ import {
 } from '../conversation/ai-conversation.schema';
 
 type NewMessage = Parameters<AiConversationService['addMessage']>[1];
+
+/** Mensaje aceptado: ya está en la conversación y Trazo lo responderá cuando le toque. */
+export interface SubmittedPrompt {
+  userMessage: ChatMessageDto;
+  result: Promise<AiResponseDto>;
+}
 
 /** Quien escribe a Trazo: el usuario autenticado. */
 export interface ChatUser {
@@ -169,10 +179,15 @@ export class AiAssistantService {
 
   // --- Mensajes de texto: mentor y edición ---
 
-  async processTextPrompt(
+  /**
+   * Guarda y difunde el mensaje y pone la respuesta en la cola del diagrama. Devuelve al
+   * instante: la respuesta de Trazo llega a todos por el socket (evento ai_message), así un
+   * modelo lento o un servidor de IA que arranca en frío no bloquean la petición HTTP.
+   */
+  async submitTextPrompt(
     dto: AiPromptDto,
     user: ChatUser,
-  ): Promise<AiResponseDto> {
+  ): Promise<SubmittedPrompt> {
     const role = await this.access.assertDiagramAccess(
       dto.diagramId,
       user.id,
@@ -193,7 +208,7 @@ export class AiAssistantService {
       clientId: dto.clientId,
     });
 
-    return this.enqueue(dto.diagramId, user, async () => {
+    const result = this.enqueue(dto.diagramId, user, async () => {
       const { nodes, connections } = this.currentDiagram(
         dto.diagramId,
         dto,
@@ -211,6 +226,15 @@ export class AiAssistantService {
       this.summarizeLater(conversation.id);
       return result;
     });
+    return { userMessage: this.conversations.toDto(userMessage), result };
+  }
+
+  /** Como submitTextPrompt, pero espera la respuesta de Trazo. */
+  async processTextPrompt(
+    dto: AiPromptDto,
+    user: ChatUser,
+  ): Promise<AiResponseDto> {
+    return (await this.submitTextPrompt(dto, user)).result;
   }
 
   private async answerText(
@@ -479,10 +503,11 @@ export class AiAssistantService {
 
   // --- Imágenes ---
 
-  async processVisionDiagram(
+  /** Digitalización de una imagen; como submitTextPrompt, la respuesta llega por el socket. */
+  async submitVisionDiagram(
     dto: AiVisionPromptDto,
     user: ChatUser,
-  ): Promise<AiResponseDto> {
+  ): Promise<SubmittedPrompt> {
     await this.access.assertDiagramAccess(dto.diagramId, user.id, 'write');
     const receivedAt = Date.now();
 
@@ -509,7 +534,7 @@ export class AiAssistantService {
           : undefined,
     });
 
-    return this.enqueue(dto.diagramId, user, async () => {
+    const result = this.enqueue(dto.diagramId, user, async () => {
       const current = this.currentDiagram(dto.diagramId, dto, receivedAt);
       try {
         const generated = await this.vision.generate({
@@ -586,6 +611,14 @@ export class AiAssistantService {
         );
       }
     });
+    return { userMessage: this.conversations.toDto(userMessage), result };
+  }
+
+  async processVisionDiagram(
+    dto: AiVisionPromptDto,
+    user: ChatUser,
+  ): Promise<AiResponseDto> {
+    return (await this.submitVisionDiagram(dto, user)).result;
   }
 
   // --- Internos ---
@@ -731,7 +764,11 @@ export class AiAssistantService {
         });
         return job();
       });
-    const tail = run.catch(() => undefined);
+    const tail = run.catch((err) =>
+      this.logger.error(
+        `Trazo no pudo atender una petición: ${(err as Error)?.message || err}`,
+      ),
+    );
     this.queues.set(diagramId, tail);
     void tail.then(() => {
       if (this.queues.get(diagramId) !== tail) return;

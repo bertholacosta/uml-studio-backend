@@ -32,8 +32,9 @@ Parameters:
       aws ec2 describe-managed-prefix-lists --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing
   InstanceType:
     Type: String
-    Default: t3.medium
-    AllowedValues: [t3.small, t3.medium, t3.large]
+    # m7i-flex.large (2 vCPU, 8 GB) entra en el plan gratuito de AWS
+    Default: m7i-flex.large
+    AllowedValues: [m7i-flex.large, c7i-flex.large, t3.small, t3.medium, t3.large]
     Description: EC2 de la API (PostgreSQL, MongoDB y Node en la misma máquina)
   AiProvider:
     Type: String
@@ -42,7 +43,9 @@ Parameters:
   OllamaBaseUrl:
     Type: String
     Default: http://localhost:11434
-    Description: Servidor Ollama con el modelo trazo (p. ej. la IP privada de la EC2 con GPU)
+    Description: >-
+      Servidor Ollama con el modelo trazo: la URL que imprime `modal deploy ollama/modal_app.py`
+      (sus tokens van en /<AppName>/MODAL_KEY y MODAL_SECRET)
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
@@ -349,7 +352,7 @@ Resources:
             CustomOriginConfig:
               HTTPPort: 3000
               OriginProtocolPolicy: http-only
-              # Trazo con un modelo local puede tardar: es el máximo sin pedir ampliación de cuota
+              # Máximo sin pedir ampliación de cuota; Trazo responde por el socket, no por HTTP
               OriginReadTimeout: 60
               OriginKeepaliveTimeout: 60
         DefaultCacheBehavior:
@@ -414,8 +417,9 @@ Resources:
     Properties:
       Name: !Sub '/${AppName}/AI_TIMEOUT_MS'
       Type: String
-      # Por debajo de los 60 s que CloudFront espera a la API
-      Value: '55000'
+      # Las respuestas de Trazo llegan por el socket, así que no les afecta el límite de 60 s de
+      # CloudFront; 3 min cubren el arranque en frío de la GPU en Modal
+      Value: '180000'
 
 Outputs:
   AppUrl:

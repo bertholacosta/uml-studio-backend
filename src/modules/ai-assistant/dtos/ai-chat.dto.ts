@@ -85,6 +85,18 @@ export class ChatMessageDto {
   createdAt: Date;
 }
 
+/** Respuesta inmediata a una pregunta: Trazo contestará por el socket (evento ai_message). */
+export class AiAcceptedDto {
+  @ApiProperty({ example: 'queued' })
+  status: 'queued';
+
+  @ApiProperty({
+    type: ChatMessageDto,
+    description: 'Mensaje guardado en la conversación compartida',
+  })
+  userMessage: ChatMessageDto;
+}
+
 export class ConversationDto {
   @ApiProperty()
   id: string;

@@ -129,9 +129,9 @@ Variables de GitHub (*Settings → Secrets and variables → Actions → Variabl
 
 Después, un push a `main` (o *Actions → Deploy → Run workflow*) despliega cada parte. La aplicación queda en la salida `AppUrl`. En producción no se crean usuarios de prueba: hay que registrarse.
 
-**Servidor del modelo (opcional, EC2 con GPU):** lanza una g5.xlarge con una AMI *Deep Learning Base OSS Nvidia Driver*, clona este repositorio y ejecuta `sudo bash deploy/ollama-server.sh`. Permite el puerto 11434 solo desde el grupo de seguridad de la API (salida `ApiSecurityGroupId`) y guarda `http://<ip-privada>:11434` en `/uml-studio/OLLAMA_BASE_URL`. Las cuentas nuevas tienen cuota 0 para instancias G: pide el aumento («Running On-Demand G and VT instances») con antelación. Apágala cuando no se use.
+**Servidor del modelo:** en Modal, como se explica en [Servidor del modelo en Modal](#servidor-del-modelo-en-modal). Alternativa en AWS con plan de pago (EC2 con GPU): lanza una g5.xlarge con una AMI *Deep Learning Base OSS Nvidia Driver*, clona este repositorio y ejecuta `sudo bash deploy/ollama-server.sh`. Permite el puerto 11434 solo desde el grupo de seguridad de la API (salida `ApiSecurityGroupId`) y guarda `http://<ip-privada>:11434` en `/uml-studio/OLLAMA_BASE_URL`. Las cuentas nuevas tienen cuota 0 para instancias G: pide el aumento («Running On-Demand G and VT instances») con antelación. Apágala cuando no se use.
 
-**Límites a tener en cuenta:** CloudFront espera a la API como máximo 60 s, por eso `AI_TIMEOUT_MS` es 55 000 en producción. La EC2 t3.medium cuesta del orden de 30 USD al mes encendida todo el tiempo; detenerla fuera de las sesiones de trabajo alarga el crédito.
+**Límites a tener en cuenta:** CloudFront espera a la API como máximo 60 s; no afecta a Trazo porque sus respuestas llegan por el socket (`AI_TIMEOUT_MS` es 180 000 en producción). La EC2 de la API es por defecto una `m7i-flex.large` (2 vCPU, 8 GB), que entra en el plan gratuito de AWS; ese plan no permite instancias con GPU, por eso el modelo `trazo` se sirve desde Modal. Detener la EC2 fuera de las sesiones de trabajo alarga el crédito.
 
 ## Variables de entorno
 
@@ -154,6 +154,7 @@ La lista completa y comentada está en [`.env.example`](.env.example). Las princ
 | `OLLAMA_BASE_URL` | Servidor Ollama: `http://localhost:11434` o la URL del túnel de Colab |
 | `OLLAMA_MODEL` | Modelo de texto (por defecto `trazo`) |
 | `OLLAMA_VISION_MODEL` | Modelo local con visión, p. ej. `qwen2.5vl:7b` (opcional) |
+| `MODAL_KEY`, `MODAL_SECRET` | Tokens de proxy de Modal, si el servidor del modelo está en Modal |
 | `OLLAMA_API_KEY` | Token si el servidor Ollama está detrás de un proxy con autenticación (opcional) |
 | `GEMINI_API_KEY` | Clave de Google AI Studio |
 | `GEMINI_MODEL` | Modelo principal de Gemini |
@@ -179,9 +180,9 @@ Todas las rutas llevan el prefijo `/api` y, salvo registro, login y estado, requ
 | `PUT` | `/diagrams/:id/ast` | Guardar el contenido del diagrama |
 | `GET` | `/ai/diagrams/:diagramId/conversation` | Conversación compartida con Trazo (últimos mensajes) |
 | `POST` | `/ai/diagrams/:diagramId/conversation` | Empezar una conversación nueva para toda la pizarra |
-| `POST` | `/ai/prompt` | Pregunta o instrucción a Trazo |
+| `POST` | `/ai/prompt` | Pregunta o instrucción a Trazo (`202`: la respuesta llega por Socket.IO) |
 | `POST` | `/ai/messages/:messageId/apply` | Aplicar una propuesta de Trazo |
-| `POST` | `/ai/vision-diagram` | Digitalizar un diagrama desde una imagen |
+| `POST` | `/ai/vision-diagram` | Digitalizar un diagrama desde una imagen (`202`, igual que `/ai/prompt`) |
 | `POST` | `/codegen/preview/:diagramId` | Vista previa del código generado |
 | `POST` | `/codegen/download/:diagramId` | Descargar el código generado en `.zip` |
 | `GET` | `/xmi/export/:diagramId` | Exportar a XMI |
@@ -215,11 +216,50 @@ ollama run trazo "¿Qué es un atributo derivado?"
 
 Dónde puede correr el servidor del modelo (solo cambia `OLLAMA_BASE_URL`):
 
-- **En el propio equipo**: `http://localhost:11434`. Con una GPU de 8 GB, como la RTX 5060 de desarrollo, cada respuesta tarda entre 5 y 10 segundos.
+- **En Modal (producción)**: [`ollama/modal_app.py`](ollama/modal_app.py) sirve Ollama con `trazo` en una GPU T4 sin servidor. El contenedor se enciende al llegar una petición y se apaga tras 5 minutos sin uso, así que el modelo está siempre en línea pero solo consume crédito mientras responde (Modal regala 30 USD al mes). Ver [Modal](#servidor-del-modelo-en-modal).
+- **En el propio equipo (desarrollo)**: `http://localhost:11434`. Con una GPU de 8 GB, como la RTX 5060 de desarrollo, cada respuesta tarda entre 5 y 10 segundos.
 - **En un servidor controlado por el equipo**: Ollama escuchando en `0.0.0.0` (`OLLAMA_HOST=0.0.0.0`) y, si se publica, detrás de un proxy con token (`OLLAMA_API_KEY`).
 - **En Google Colab**: [`ollama/trazo_colab.ipynb`](ollama/trazo_colab.ipynb) instala Ollama en una GPU T4, crea el modelo `trazo` y lo publica con un túnel de Cloudflare; la URL que imprime va en `OLLAMA_BASE_URL`.
 
 Para cambiar de modelo base (por ejemplo `qwen3:8b`), edita la línea `FROM` del Modelfile y vuelve a ejecutar `ollama create`. Las fotos de diagramas las procesa Gemini (`AI_VISION_PROVIDER=gemini`) porque Qwen 2.5 Coder no lee imágenes; con `OLLAMA_VISION_MODEL=qwen2.5vl:7b` también pueden quedarse en local.
+
+### Servidor del modelo en Modal
+
+```bash
+pip install modal
+modal setup                                  # inicia sesión en Modal desde el navegador
+modal run ollama/modal_app.py::prepare       # una vez: descarga Qwen y crea «trazo» en un volumen
+modal deploy ollama/modal_app.py             # publica la API de Ollama y muestra su URL
+```
+
+La URL es privada: Modal exige los **tokens de proxy** (*Settings → Proxy Auth Tokens*) en las cabeceras `Modal-Key` y `Modal-Secret`. En el backend van en `MODAL_KEY` y `MODAL_SECRET`, y la URL en `OLLAMA_BASE_URL`. En AWS:
+
+```bash
+aws ssm put-parameter --overwrite --name /uml-studio/OLLAMA_BASE_URL --type String --value "https://<workspace>--trazo-serve.modal.run"
+aws ssm put-parameter --name /uml-studio/MODAL_KEY --type SecureString --value "wk-..."
+aws ssm put-parameter --name /uml-studio/MODAL_SECRET --type SecureString --value "ws-..."
+```
+
+y se vuelve a desplegar el backend (*Actions → Deploy → Run workflow*) para que lea los parámetros.
+
+Tras unos minutos sin uso, la primera respuesta tarda más (hasta ~1 minuto) mientras Modal enciende la GPU y carga el modelo. Por eso Trazo responde de forma **asíncrona**: `POST /ai/prompt` devuelve `202` con el mensaje guardado y la respuesta llega a toda la pizarra por Socket.IO (`ai_message` y, si hay cambios, `diagram_synced`); el chat avisa de que el servidor del modelo se está encendiendo.
+
+### Cómo conoce Trazo el contexto
+
+El modelo no guarda nada entre peticiones: en cada pregunta el backend le envía todo lo que necesita.
+
+```text
+Navegador ──► API (AWS) ──► arma el contexto ──────────────────────────► Ollama «trazo» (Modal)
+                 │   · instrucción de mentor y formato de respuesta              │
+                 │   · resumen de la conversación (MongoDB)                      │
+                 │   · últimos 12 mensajes, cada uno con el nombre de su autor   │
+                 │   · proyecto y diagrama (PostgreSQL)                          │
+                 │   · quién está conectado y con qué permiso (Socket.IO)        │
+                 │   · diagrama actual en texto compacto                         │
+                 │   · mensaje nuevo y quién lo escribe                          │
+                 ◄──────────────────────── JSON: respuesta + operaciones ────────┘
+                 └─► guarda la respuesta en MongoDB, aplica los cambios y la difunde a la sala
+```
 
 ### Qué se guarda en MongoDB
 
@@ -247,7 +287,7 @@ src/
     ├── diagrams/           Diagramas, clases, atributos, métodos y relaciones
     ├── ai-assistant/       Trazo: proveedores (Ollama, Gemini), conversación en MongoDB, prompts y operaciones
     └── code-generator/     Generadores Spring Boot y Flutter (plantillas Mustache) y XMI
-ollama/                     Modelfile del modelo propio y cuaderno de Colab
+ollama/                     Modelfile del modelo propio, servidor en Modal y cuaderno de Colab
 infra/                      Infraestructura de AWS (CloudFormation)
 deploy/                     Compose de producción y scripts de despliegue en EC2
 .github/workflows/          CI en pull requests y despliegue continuo a AWS
