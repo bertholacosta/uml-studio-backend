@@ -39,7 +39,7 @@ El cliente web está en el repositorio del frontend (`sw1_parcial1_frontend`).
 
 ## Requisitos
 
-- Node.js 22 o superior
+- Node.js 24 o superior
 - PostgreSQL 14 o superior
 - MongoDB 7 o superior
 - [Ollama](https://ollama.com) en el propio equipo, en un servidor o en Google Colab (ver [Trazo e IA local](#trazo-e-ia-local))
