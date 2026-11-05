@@ -7,6 +7,7 @@ import {
   AiMessage,
   AiMessageDocument,
   ChatAuthor,
+  ChatChannel,
 } from './ai-conversation.schema';
 import { ChatMessageDto, ConversationDto } from '../dtos/ai-chat.dto';
 
@@ -14,15 +15,29 @@ import { ChatMessageDto, ConversationDto } from '../dtos/ai-chat.dto';
 export const HISTORY_WINDOW = 12;
 /** Cuando hay más mensajes sin resumir que esto, los más antiguos se resumen. */
 export const SUMMARY_TRIGGER = 24;
+/** Mensajes hacia atrás en los que se busca el último diagrama con el que trabajó Trazo. */
+const THREAD_WINDOW = 6;
 
 export interface ConversationContext {
   summary: string;
   history: AiMessageDocument[];
 }
 
+export type NewMessage = Omit<
+  AiMessage,
+  | 'conversationId'
+  | 'projectId'
+  | 'channel'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'status'
+> &
+  Partial<Pick<AiMessage, 'status'>>;
+
 /**
- * Guarda en MongoDB la conversación compartida de cada pizarra: mensajes de los
- * colaboradores, respuestas de Trazo, propuestas y el resumen que mantiene el contexto.
+ * Guarda en MongoDB las conversaciones de cada proyecto: el canal del equipo y las
+ * conversaciones privadas con Trazo, con sus mensajes, propuestas y el resumen que mantiene
+ * el contexto entre sesiones.
  */
 @Injectable()
 export class AiConversationService {
@@ -33,19 +48,21 @@ export class AiConversationService {
     private readonly messages: Model<AiMessage>,
   ) {}
 
-  /** Conversación activa del diagrama; si no hay ninguna, la crea. */
+  /** Conversación activa (canal del equipo o privada de `author`); si no hay ninguna, la crea. */
   async getActive(
-    diagramId: string,
+    projectId: string,
+    channel: ChatChannel,
     author: ChatAuthor,
-    projectId?: string,
   ): Promise<AiConversationDocument> {
+    const ownerId = channel === 'direct' ? author.userId : '';
     const upsert = () =>
       this.conversations.findOneAndUpdate(
-        { diagramId, active: true },
+        { projectId, channel, ownerId, active: true },
         {
           $setOnInsert: {
-            diagramId,
             projectId,
+            channel,
+            ownerId,
             startedBy: author,
             active: true,
           },
@@ -55,7 +72,7 @@ export class AiConversationService {
     try {
       return await upsert();
     } catch (err: any) {
-      // Dos colaboradores abrieron la pizarra a la vez: la otra petición ya la creó
+      // Dos personas la abrieron a la vez: la otra petición ya la creó
       if (err?.code === 11000) return upsert();
       throw err;
     }
@@ -63,17 +80,19 @@ export class AiConversationService {
 
   /** Cierra la conversación activa (se conserva como historial) y abre otra. */
   async startNew(
-    diagramId: string,
+    projectId: string,
+    channel: ChatChannel,
     author: ChatAuthor,
-    projectId?: string,
   ): Promise<AiConversationDocument> {
+    const ownerId = channel === 'direct' ? author.userId : '';
     await this.conversations.updateMany(
-      { diagramId, active: true },
+      { projectId, channel, ownerId, active: true },
       { $set: { active: false } },
     );
     return this.conversations.create({
-      diagramId,
       projectId,
+      channel,
+      ownerId,
       startedBy: author,
       active: true,
     });
@@ -86,16 +105,13 @@ export class AiConversationService {
 
   async addMessage(
     conversation: AiConversationDocument,
-    message: Omit<
-      AiMessage,
-      'conversationId' | 'diagramId' | 'createdAt' | 'updatedAt' | 'status'
-    > &
-      Partial<Pick<AiMessage, 'status'>>,
+    message: NewMessage,
   ): Promise<AiMessageDocument> {
     const saved = await this.messages.create({
       ...message,
       conversationId: conversation.id,
-      diagramId: conversation.diagramId,
+      projectId: conversation.projectId,
+      channel: conversation.channel,
     });
     await this.conversations.updateOne(
       { _id: conversation._id },
@@ -136,6 +152,17 @@ export class AiConversationService {
       .sort({ _id: -1 })
       .limit(HISTORY_WINDOW);
     return { summary: conversation.summary || '', history: history.reverse() };
+  }
+
+  /** Diagrama con el que se trabajó en los últimos mensajes (para «ahora conéctala con…»). */
+  async lastDiagramInThread(
+    conversation: AiConversationDocument,
+  ): Promise<string | undefined> {
+    const recent = await this.messages
+      .find({ conversationId: conversation.id })
+      .sort({ _id: -1 })
+      .limit(THREAD_WINDOW);
+    return recent.find((m) => m.diagramId)?.diagramId;
   }
 
   /**
@@ -208,7 +235,8 @@ export class AiConversationService {
   ): ConversationDto {
     return {
       id: conversation.id,
-      diagramId: conversation.diagramId,
+      projectId: conversation.projectId,
+      channel: conversation.channel,
       startedBy: conversation.startedBy,
       createdAt: conversation.createdAt,
       messages: messages.map((m) => this.toDto(m)),
@@ -220,12 +248,17 @@ export class AiConversationService {
     return {
       id: message.id,
       conversationId: message.conversationId,
+      projectId: message.projectId,
+      channel: message.channel,
       role: message.role,
       author: {
         userId: message.author.userId,
         userName: message.author.userName,
       },
       text: message.text,
+      mentions: message.mentions,
+      diagramId: message.diagramId,
+      diagramName: message.diagramName,
       clientId: message.clientId,
       replyTo: message.replyTo,
       intent: message.intent,

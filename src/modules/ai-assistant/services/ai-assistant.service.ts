@@ -1,5 +1,7 @@
 import {
+  BadRequestException,
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   Logger,
@@ -12,12 +14,15 @@ import {
 } from '../../projects/gateways/collaboration.gateway';
 import { ProjectAccessService } from '../../projects/services/project-access.service';
 import { ProjectRole } from '../../projects/entities/project-role.enum';
+import { DiagramService } from '../../diagrams/services/diagram.service';
 import { AiPromptDto, AiVisionPromptDto } from '../dtos/ai-request.dto';
 import { AiResponseDto } from '../dtos/ai-response.dto';
 import {
   ApplyProposalDto,
   ChatMessageDto,
   ConversationDto,
+  OpenDiagramDto,
+  SendChatMessageDto,
 } from '../dtos/ai-chat.dto';
 import {
   AI_PROVIDER,
@@ -55,29 +60,45 @@ import {
   sanitizeNodes,
   withPositions,
 } from '../domain/diagram-sanitizer';
-import { AiConversationService } from '../conversation/ai-conversation.service';
+import {
+  DiagramRef,
+  DiagramTarget,
+  diagramTag,
+  resolveDiagramTarget,
+} from '../domain/diagram-target';
+import {
+  AiConversationService,
+  NewMessage,
+} from '../conversation/ai-conversation.service';
 import {
   AiConversationDocument,
   AiMessageDocument,
   ChatAuthor,
+  ChatChannel,
   ChatIntent,
 } from '../conversation/ai-conversation.schema';
 
-type NewMessage = Parameters<AiConversationService['addMessage']>[1];
-
-/** Mensaje aceptado: ya está en la conversación y Trazo lo responderá cuando le toque. */
-export interface SubmittedPrompt {
-  userMessage: ChatMessageDto;
-  result: Promise<AiResponseDto>;
+/** Mensaje guardado; si llamó a Trazo, `result` se resuelve cuando Trazo responde. */
+export interface SubmittedMessage {
+  message: ChatMessageDto;
+  result?: Promise<AiResponseDto>;
 }
 
-/** Quien escribe a Trazo: el usuario autenticado. */
+/** Quien escribe: el usuario autenticado. */
 export interface ChatUser {
   id: string;
   fullName: string;
 }
 
+interface Canvas {
+  target: DiagramTarget | null;
+  diagrams: DiagramRef[];
+  nodes: UmlClassNode[];
+  connections: UmlConnection[];
+}
+
 const TRAZO: ChatAuthor = { userId: AI_USER_ID, userName: AI_USER_NAME };
+const TRAZO_MENTION = /(^|[^\p{L}\d_])@trazo\b/iu;
 const INTENTS: ChatIntent[] = ['answer', 'edit', 'propose', 'clarify'];
 // Las miniaturas que se guardan con el mensaje (las fotos completas no)
 const MAX_STORED_IMAGE_CHARS = 400_000;
@@ -115,10 +136,13 @@ function addressTo(name: string, text: string): string {
 }
 
 /**
- * Trazo en la pizarra compartida. Cada pregunta y cada respuesta se guarda en MongoDB y se
- * difunde a todos los colaboradores del diagrama; Trazo distingue quién le habla y puede
- * explicar, proponer cambios (que alguien aplica después) o editar el diagrama.
- * Las peticiones de un mismo diagrama se atienden en orden, una tras otra.
+ * Orquestador de Trazo: la capa intermedia entre el equipo y la única instancia de IA.
+ *
+ * Recibe los mensajes del canal del equipo de cada proyecto (y de las conversaciones privadas),
+ * los guarda en MongoDB y los difunde. Solo cuando alguien menciona a Trazo (o le escribe en
+ * privado) decide sobre qué lienzo trabajar, arma el contexto (conversación, proyecto, quién
+ * está conectado, el diagrama), llama al modelo, aplica y guarda los cambios y responde a la
+ * persona por su nombre. Las peticiones de un mismo proyecto se atienden en orden.
  */
 @Injectable()
 export class AiAssistantService {
@@ -132,18 +156,21 @@ export class AiAssistantService {
     private readonly collaborationGateway: CollaborationGateway,
     private readonly access: ProjectAccessService,
     private readonly conversations: AiConversationService,
+    private readonly diagrams: DiagramService,
   ) {}
 
-  // --- Conversación compartida ---
+  // --- Conversaciones ---
 
   async getConversation(
-    diagramId: string,
+    projectId: string,
+    channel: ChatChannel,
     user: ChatUser,
     limit = 60,
   ): Promise<ConversationDto> {
-    await this.access.assertDiagramAccess(diagramId, user.id, 'read');
+    await this.access.assertProjectAccess(projectId, user.id, 'read');
     const conversation = await this.conversations.getActive(
-      diagramId,
+      projectId,
+      channel,
       this.authorOf(user),
     );
     const { messages, hasMore } = await this.conversations.recentMessages(
@@ -157,85 +184,125 @@ export class AiAssistantService {
     );
   }
 
-  /** Empieza una conversación nueva para toda la pizarra (la anterior queda guardada). */
+  /**
+   * Empieza una conversación nueva (la anterior queda guardada). El canal del equipo solo lo
+   * puede reiniciar el administrador del proyecto; la conversación privada, su dueño.
+   */
   async startConversation(
-    diagramId: string,
+    projectId: string,
+    channel: ChatChannel,
     user: ChatUser,
   ): Promise<ConversationDto> {
-    await this.access.assertDiagramAccess(diagramId, user.id, 'write');
-    const { projectId } = await this.access.getDiagramContext(diagramId);
-    const conversation = await this.conversations.startNew(
-      diagramId,
-      this.authorOf(user),
+    const role = await this.access.assertProjectAccess(
       projectId,
+      user.id,
+      'read',
+    );
+    if (channel === 'team' && role !== ProjectRole.OWNER) {
+      throw new ForbiddenException(
+        'Solo el administrador del proyecto puede reiniciar el canal del equipo',
+      );
+    }
+    const conversation = await this.conversations.startNew(
+      projectId,
+      channel,
+      this.authorOf(user),
     );
     const dto = this.conversations.toConversationDto(conversation, [], false);
-    this.collaborationGateway.emitToDiagram(
-      diagramId,
-      'ai_conversation_reset',
-      dto,
-    );
+    this.emit(conversation, 'chat_reset', dto);
     return dto;
   }
 
-  // --- Mensajes de texto: mentor y edición ---
+  // --- Mensajes ---
 
   /**
-   * Guarda y difunde el mensaje y pone la respuesta en la cola del diagrama. Devuelve al
-   * instante: la respuesta de Trazo llega a todos por el socket (evento ai_message), así un
-   * modelo lento o un servidor de IA que arranca en frío no bloquean la petición HTTP.
+   * Guarda y difunde un mensaje. Si menciona a Trazo (o es una conversación privada), pone la
+   * respuesta en la cola del proyecto y devuelve al instante: la respuesta llega por el socket
+   * (evento chat_message), así un modelo lento no bloquea la petición HTTP.
    */
-  async submitTextPrompt(
-    dto: AiPromptDto,
+  async submitMessage(
+    projectId: string,
+    dto: SendChatMessageDto,
     user: ChatUser,
-  ): Promise<SubmittedPrompt> {
-    const role = await this.access.assertDiagramAccess(
-      dto.diagramId,
+  ): Promise<SubmittedMessage> {
+    const role = await this.access.assertProjectAccess(
+      projectId,
       user.id,
       'read',
     );
     const canEdit = role !== ProjectRole.VIEWER;
     const receivedAt = Date.now();
-    const prompt = dto.prompt.trim();
+    const text = dto.text.trim();
+    const callsTrazo =
+      dto.channel === 'direct' ||
+      TRAZO_MENTION.test(text) ||
+      !!dto.mentions?.includes(AI_USER_ID);
+    const mentions = [
+      ...new Set([
+        ...(dto.mentions || []),
+        ...(callsTrazo && dto.channel === 'team' ? [AI_USER_ID] : []),
+      ]),
+    ];
 
     const conversation = await this.conversations.getActive(
-      dto.diagramId,
+      projectId,
+      dto.channel,
       this.authorOf(user),
     );
     const userMessage = await this.publish(conversation, {
       role: 'user',
       author: this.authorOf(user),
-      text: prompt,
+      text,
       clientId: dto.clientId,
+      mentions: mentions.length ? mentions : undefined,
     });
+    const message = this.conversations.toDto(userMessage);
+    if (!callsTrazo) return { message };
 
-    const result = this.enqueue(dto.diagramId, user, async () => {
-      const { nodes, connections } = this.currentDiagram(
-        dto.diagramId,
+    const result = this.enqueue(conversation, user, async () => {
+      const canvas = await this.canvasFor(
+        conversation,
+        text,
         dto,
         receivedAt,
+        user,
       );
-      const result = await this.answerText(
+      const response = await this.answerText(
         conversation,
         userMessage,
         user,
         canEdit,
-        prompt,
-        nodes,
-        connections,
+        text,
+        canvas,
       );
       this.summarizeLater(conversation.id);
-      return result;
+      return response;
     });
-    return { userMessage: this.conversations.toDto(userMessage), result };
+    return { message, result };
   }
 
-  /** Como submitTextPrompt, pero espera la respuesta de Trazo. */
+  /**
+   * Pregunta privada a Trazo sobre un diagrama concreto, esperando la respuesta (la usan las
+   * pruebas y los clientes que no escuchan el socket).
+   */
   async processTextPrompt(
     dto: AiPromptDto,
     user: ChatUser,
   ): Promise<AiResponseDto> {
-    return (await this.submitTextPrompt(dto, user)).result;
+    const projectId = await this.projectOf(dto.diagramId);
+    const { result } = await this.submitMessage(
+      projectId,
+      {
+        channel: 'direct',
+        text: dto.prompt,
+        clientId: dto.clientId,
+        activeDiagramId: dto.diagramId,
+        currentNodes: dto.currentNodes,
+        currentConnections: dto.currentConnections,
+      },
+      user,
+    );
+    return result!;
   }
 
   private async answerText(
@@ -244,28 +311,38 @@ export class AiAssistantService {
     user: ChatUser,
     canEdit: boolean,
     prompt: string,
-    currentNodes: UmlClassNode[],
-    currentConnections: UmlConnection[],
+    canvas: Canvas,
   ): Promise<AiResponseDto> {
-    const diagramId = conversation.diagramId;
+    const {
+      target,
+      nodes: currentNodes,
+      connections: currentConnections,
+    } = canvas;
+    const diagramId = target?.diagram.id;
+    const onCanvas = target
+      ? { diagramId: target.diagram.id, diagramName: target.diagram.name }
+      : {};
     const reply = (fields: Omit<NewMessage, 'role' | 'author'>) =>
       this.publish(conversation, {
         role: 'assistant',
         author: TRAZO,
         replyTo: userMessage.id,
+        ...onCanvas,
         ...fields,
         text: addressTo(user.fullName, fields.text),
       });
 
     // Vaciar el diagrama no necesita al modelo
     if (
+      diagramId &&
       canEdit &&
       !ATTRIBUTE_OR_METHOD.test(prompt) &&
       DELETE_ALL.some((re) => re.test(prompt))
     ) {
+      await this.saveCanvas(diagramId, [], [], user);
       this.collaborationGateway.broadcastAiMutation(diagramId, [], []);
       const message = await reply({
-        text: 'vacié el diagrama: eliminé todas las clases y relaciones.',
+        text: `vacié ${diagramTag(target.diagram.name)}: eliminé todas las clases y relaciones.`,
         intent: 'edit',
         changesSummary: 'Limpieza total del diagrama.',
         operations: [{ op: 'clear_diagram' }],
@@ -283,16 +360,18 @@ export class AiAssistantService {
     }
 
     // Bloquear los nodos que menciona la instrucción mientras Trazo trabaja
-    const lockedIds = canEdit
-      ? this.mentionedNodeIds(prompt, currentNodes)
-      : [];
-    this.collaborationGateway.lockNodesForAi(diagramId, lockedIds);
+    const lockedIds =
+      diagramId && canEdit ? this.mentionedNodeIds(prompt, currentNodes) : [];
+    if (diagramId) {
+      this.collaborationGateway.lockNodesForAi(diagramId, lockedIds);
+    }
 
     try {
-      const [context, diagramInfo] = await Promise.all([
+      const [context, projectName] = await Promise.all([
         this.conversations.contextFor(conversation, userMessage.id),
-        this.access.getDiagramContext(diagramId),
+        this.access.getProjectName(conversation.projectId),
       ]);
+      const diagramNames = new Map(canvas.diagrams.map((d) => [d.id, d.name]));
       const generated = await this.ai.generate({
         systemInstruction: buildMentorInstruction(context.summary),
         history: this.toTurns(context.history),
@@ -302,9 +381,24 @@ export class AiAssistantService {
               speaker: user.fullName,
               canEdit,
               prompt,
-              projectName: diagramInfo.projectName,
-              diagramName: diagramInfo.diagramName,
-              participants: this.collaborationGateway.connectedUsers(diagramId),
+              channel: conversation.channel,
+              projectName,
+              diagrams: canvas.diagrams.map((d) => ({
+                name: d.name,
+                classCount: d.classNames.length,
+              })),
+              target: target
+                ? { name: target.diagram.name, reason: target.reason }
+                : undefined,
+              participants: this.collaborationGateway
+                .connectedUsers(conversation.projectId)
+                .map((p) => ({
+                  userName: p.userName,
+                  canEdit: p.canEdit,
+                  diagramName: p.diagramId
+                    ? diagramNames.get(p.diagramId)
+                    : undefined,
+                })),
               nodes: currentNodes,
               connections: currentConnections,
             }),
@@ -342,7 +436,34 @@ export class AiAssistantService {
         modelUsed: generated.model,
       };
 
-      if (intent === 'edit') {
+      // Hay cambios que hacer pero no se sabe en qué lienzo: se pregunta
+      if (
+        !target &&
+        operations.length &&
+        (intent === 'edit' || intent === 'propose')
+      ) {
+        const tags = canvas.diagrams.map((d) => diagramTag(d.name));
+        const message = await reply({
+          text: tags.length
+            ? `¿en qué diagrama lo hago? Indícalo con #: ${tags.join(', ')}.`
+            : 'el proyecto todavía no tiene diagramas: crea uno y vuelve a pedírmelo.',
+          intent: 'clarify',
+          status: 'clarification',
+          ...modelInfo,
+        });
+        return {
+          ...common,
+          success: false,
+          action: 'clarification_required',
+          message: message.text,
+          nodes: [],
+          connections: [],
+          changesSummary: 'Falta indicar el diagrama.',
+          assistantMessage: this.conversations.toDto(message),
+        };
+      }
+
+      if (intent === 'edit' && target) {
         const edited = this.applyModelEdit(
           parsed,
           operations,
@@ -354,8 +475,9 @@ export class AiAssistantService {
           edited.nodes,
           edited.connections,
         );
+        await this.saveCanvas(target.diagram.id, nodes, connections, user);
         this.collaborationGateway.broadcastAiMutation(
-          diagramId,
+          target.diagram.id,
           nodes,
           connections,
         );
@@ -434,13 +556,15 @@ export class AiAssistantService {
         'no pude procesar ese mensaje. Prueba a reformularlo.',
       );
     } finally {
-      this.collaborationGateway.unlockNodesForAi(diagramId, lockedIds);
+      if (diagramId) {
+        this.collaborationGateway.unlockNodesForAi(diagramId, lockedIds);
+      }
     }
   }
 
   // --- Propuestas ---
 
-  /** Aplica al diagrama actual los cambios que Trazo propuso en un mensaje. */
+  /** Aplica a su diagrama los cambios que Trazo propuso en un mensaje. */
   async applyProposal(
     messageId: string,
     dto: ApplyProposalDto,
@@ -450,10 +574,26 @@ export class AiAssistantService {
     if (!message?.proposal || !message.operations?.length) {
       throw new NotFoundException('Propuesta no encontrada');
     }
+    if (!message.diagramId) {
+      throw new BadRequestException('La propuesta no indica en qué diagrama');
+    }
     await this.access.assertDiagramAccess(message.diagramId, user.id, 'write');
+    const conversation = await this.conversations.getActive(
+      message.projectId,
+      message.channel,
+      this.authorOf(user),
+    );
+    // Una propuesta privada solo la ve (y la aplica) quien conversa con Trazo
+    if (
+      conversation.id !== message.conversationId &&
+      message.channel === 'direct'
+    ) {
+      throw new NotFoundException('Propuesta no encontrada');
+    }
     const receivedAt = Date.now();
+    const diagramId = message.diagramId;
 
-    return this.enqueue(message.diagramId, user, async () => {
+    return this.enqueue(conversation, user, async () => {
       const applied = await this.conversations.markProposalApplied(
         messageId,
         this.authorOf(user),
@@ -462,7 +602,7 @@ export class AiAssistantService {
         throw new ConflictException('Esta propuesta ya se aplicó');
       }
       try {
-        const current = this.currentDiagram(message.diagramId, dto, receivedAt);
+        const current = await this.loadCanvas(diagramId, dto, receivedAt, user);
         const result = applyOperations(
           current.nodes,
           current.connections,
@@ -477,17 +617,14 @@ export class AiAssistantService {
           result.nodes,
           result.connections,
         );
+        await this.saveCanvas(diagramId, nodes, connections, user);
         this.collaborationGateway.broadcastAiMutation(
-          message.diagramId,
+          diagramId,
           nodes,
           connections,
         );
         const dtoMessage = this.conversations.toDto(applied);
-        this.collaborationGateway.emitToDiagram(
-          message.diagramId,
-          'ai_message',
-          dtoMessage,
-        );
+        this.emit(conversation, 'chat_message', dtoMessage);
         return {
           success: true,
           action: 'diagram_mutated',
@@ -506,12 +643,13 @@ export class AiAssistantService {
 
   // --- Imágenes ---
 
-  /** Digitalización de una imagen; como submitTextPrompt, la respuesta llega por el socket. */
+  /** Digitaliza una imagen en el diagrama indicado; la respuesta llega por el socket. */
   async submitVisionDiagram(
     dto: AiVisionPromptDto,
     user: ChatUser,
-  ): Promise<SubmittedPrompt> {
+  ): Promise<SubmittedMessage> {
     await this.access.assertDiagramAccess(dto.diagramId, user.id, 'write');
+    const projectId = await this.projectOf(dto.diagramId);
     const receivedAt = Date.now();
 
     // El tipo MIME de un data URI tiene prioridad sobre el declarado
@@ -523,7 +661,8 @@ export class AiAssistantService {
     const image: AiPart = { inlineData: { mimeType, data } };
 
     const conversation = await this.conversations.getActive(
-      dto.diagramId,
+      projectId,
+      dto.channel || 'team',
       this.authorOf(user),
     );
     const userMessage = await this.publish(conversation, {
@@ -531,14 +670,22 @@ export class AiAssistantService {
       author: this.authorOf(user),
       text: dto.prompt?.trim() || 'Digitaliza el diagrama de esta imagen.',
       clientId: dto.clientId,
+      mentions: conversation.channel === 'team' ? [AI_USER_ID] : undefined,
       image:
         dto.imageBase64.length <= MAX_STORED_IMAGE_CHARS
           ? `data:${mimeType};base64,${data}`
           : undefined,
     });
 
-    const result = this.enqueue(dto.diagramId, user, async () => {
-      const current = this.currentDiagram(dto.diagramId, dto, receivedAt);
+    const result = this.enqueue(conversation, user, async () => {
+      const current = await this.loadCanvas(
+        dto.diagramId,
+        { ...dto, activeDiagramId: dto.diagramId },
+        receivedAt,
+        user,
+      );
+      const diagramName = (await this.access.getDiagramContext(dto.diagramId))
+        .diagramName;
       try {
         const generated = await this.vision.generate({
           systemInstruction: UML_VISION_INSTRUCTION,
@@ -569,6 +716,7 @@ export class AiAssistantService {
 
         const nodes = sanitizeNodes(extracted.nodes);
         const connections = sanitizeConnections(extracted.connections, nodes);
+        await this.saveCanvas(dto.diagramId, nodes, connections, user);
         this.collaborationGateway.broadcastAiMutation(
           dto.diagramId,
           nodes,
@@ -580,6 +728,8 @@ export class AiAssistantService {
           role: 'assistant',
           author: TRAZO,
           replyTo: userMessage.id,
+          diagramId: dto.diagramId,
+          diagramName,
           text: addressTo(
             user.fullName,
             parsed.message ||
@@ -614,17 +764,125 @@ export class AiAssistantService {
         );
       }
     });
-    return { userMessage: this.conversations.toDto(userMessage), result };
+    return { message: this.conversations.toDto(userMessage), result };
   }
 
   async processVisionDiagram(
     dto: AiVisionPromptDto,
     user: ChatUser,
   ): Promise<AiResponseDto> {
-    return (await this.submitVisionDiagram(dto, user)).result;
+    return (await this.submitVisionDiagram(dto, user)).result!;
   }
 
   // --- Internos ---
+
+  /** Elige el lienzo del mensaje y carga su contenido más reciente. */
+  private async canvasFor(
+    conversation: AiConversationDocument,
+    text: string,
+    dto: OpenDiagramDto,
+    receivedAt: number,
+    user: ChatUser,
+  ): Promise<Canvas> {
+    const [diagrams, threadDiagramId] = await Promise.all([
+      this.access.listProjectDiagrams(conversation.projectId),
+      this.conversations.lastDiagramInThread(conversation),
+    ]);
+    const target = resolveDiagramTarget(text, diagrams, {
+      activeDiagramId: dto.activeDiagramId,
+      threadDiagramId,
+    });
+    if (!target) return { target, diagrams, nodes: [], connections: [] };
+    const content = await this.loadCanvas(
+      target.diagram.id,
+      dto,
+      receivedAt,
+      user,
+    );
+    return { target, diagrams, ...content };
+  }
+
+  /**
+   * Contenido del diagrama sobre el que trabaja Trazo: el de la sala si alguien lo cambió
+   * mientras la petición esperaba turno, el que envió el navegador si es el que tiene abierto,
+   * el último que circuló por la sala o, si nadie lo tiene abierto, el guardado.
+   */
+  private async loadCanvas(
+    diagramId: string,
+    dto: OpenDiagramDto,
+    receivedAt: number,
+    user: ChatUser,
+  ): Promise<{ nodes: UmlClassNode[]; connections: UmlConnection[] }> {
+    const snapshot = this.collaborationGateway.latestSnapshot(diagramId);
+    if (snapshot && snapshot.at > receivedAt) {
+      return {
+        nodes: withPositions(snapshot.nodes),
+        connections: snapshot.connections || [],
+      };
+    }
+    if (dto.activeDiagramId === diagramId && dto.currentNodes) {
+      return {
+        nodes: withPositions(dto.currentNodes),
+        connections: dto.currentConnections || [],
+      };
+    }
+    if (snapshot) {
+      return {
+        nodes: withPositions(snapshot.nodes),
+        connections: snapshot.connections || [],
+      };
+    }
+    const saved = await this.diagrams.findOne(diagramId, user.id);
+    return {
+      nodes: withPositions(saved.nodes),
+      connections: (saved.connections || []) as UmlConnection[],
+    };
+  }
+
+  /** Guarda en PostgreSQL los cambios de Trazo, aunque nadie tenga el diagrama abierto. */
+  private async saveCanvas(
+    diagramId: string,
+    nodes: UmlClassNode[],
+    connections: UmlConnection[],
+    user: ChatUser,
+  ): Promise<void> {
+    await this.diagrams.saveAst(
+      diagramId,
+      {
+        nodes: nodes.map((n) => ({
+          id: n.id,
+          name: n.name,
+          positionX: n.position.x,
+          positionY: n.position.y,
+          width: n.width,
+          height: n.height ?? null,
+          isAnchor: n.isAnchor,
+          assocMainConnId: n.assocMainConnId ?? null,
+          attributes: n.attributes,
+          methods: n.methods,
+        })),
+        connections: connections.map((c) => ({
+          id: c.id,
+          sourceNodeId: c.sourceNodeId || '',
+          targetNodeId: c.targetNodeId || '',
+          sourceId: c.sourceId,
+          targetId: c.targetId,
+          type: c.type,
+          name: c.name,
+          sourceMultiplicity: c.sourceMultiplicity,
+          targetMultiplicity: c.targetMultiplicity,
+          assocAnchorNodeId: c.assocAnchorNodeId ?? null,
+        })),
+      } as any,
+      user.id,
+    );
+  }
+
+  private async projectOf(diagramId: string): Promise<string> {
+    const { projectId } = await this.access.getDiagramContext(diagramId);
+    if (!projectId) throw new NotFoundException('Diagrama no encontrado');
+    return projectId;
+  }
 
   /**
    * Aplica la respuesta del modelo: normalmente una lista de operaciones; si el modelo
@@ -680,28 +938,6 @@ export class AiAssistantService {
     return 'answer';
   }
 
-  /**
-   * El diagrama sobre el que trabaja Trazo: el que envió el navegador o, si mientras la
-   * petición esperaba turno alguien (o Trazo) lo cambió, el más reciente de la sala.
-   */
-  private currentDiagram(
-    diagramId: string,
-    dto: { currentNodes?: any[]; currentConnections?: any[] },
-    receivedAt: number,
-  ): { nodes: UmlClassNode[]; connections: UmlConnection[] } {
-    const snapshot = this.collaborationGateway.latestSnapshot(diagramId);
-    if (snapshot && snapshot.at > receivedAt) {
-      return {
-        nodes: withPositions(snapshot.nodes),
-        connections: snapshot.connections || [],
-      };
-    }
-    return {
-      nodes: withPositions(dto.currentNodes),
-      connections: dto.currentConnections || [],
-    };
-  }
-
   private mentionedNodeIds(prompt: string, nodes: UmlClassNode[]): string[] {
     const normPrompt = normalizeForFuzzy(prompt);
     return nodes
@@ -715,7 +951,7 @@ export class AiAssistantService {
       .map((node) => node.id);
   }
 
-  /** Historial para el modelo: cada mensaje de un colaborador lleva su nombre delante. */
+  /** Historial para el modelo: cada mensaje de una persona lleva su nombre delante. */
   private toTurns(messages: AiMessageDocument[]): AiTurn[] {
     return messages.map((m) => {
       if (m.role === 'user') {
@@ -724,63 +960,83 @@ export class AiAssistantService {
           text: formatUserTurn(m.author.userName, m.text),
         };
       }
+      const where = m.diagramName ? ` en ${diagramTag(m.diagramName)}` : '';
       const note =
         m.intent === 'edit' && m.changesSummary
-          ? `\n[Cambios aplicados: ${m.changesSummary}]`
+          ? `\n[Cambios aplicados${where}: ${m.changesSummary}]`
           : m.intent === 'propose' && m.changesSummary
-            ? `\n[Propuesta ${m.proposal?.state === 'applied' ? `aplicada por ${m.proposal.appliedBy?.userName}` : 'pendiente'}: ${m.changesSummary}]`
+            ? `\n[Propuesta${where} ${m.proposal?.state === 'applied' ? `aplicada por ${m.proposal.appliedBy?.userName}` : 'pendiente'}: ${m.changesSummary}]`
             : '';
       return { role: 'assistant', text: m.text + note };
     });
   }
 
-  /** Guarda un mensaje y lo envía a todos los que tienen abierta la pizarra. */
+  /** Guarda un mensaje y lo envía a quien corresponde (canal del equipo o conversación privada). */
   private async publish(
     conversation: AiConversationDocument,
     message: NewMessage,
   ): Promise<AiMessageDocument> {
     const saved = await this.conversations.addMessage(conversation, message);
-    this.collaborationGateway.emitToDiagram(
-      conversation.diagramId,
-      'ai_message',
-      this.conversations.toDto(saved),
-    );
+    this.emit(conversation, 'chat_message', this.conversations.toDto(saved));
     return saved;
   }
 
+  private emit(
+    conversation: AiConversationDocument,
+    event: string,
+    payload: unknown,
+  ): void {
+    if (conversation.channel === 'direct') {
+      this.collaborationGateway.emitToUser(
+        conversation.ownerId,
+        event,
+        payload,
+      );
+    } else {
+      this.collaborationGateway.emitToProject(
+        conversation.projectId,
+        event,
+        payload,
+      );
+    }
+  }
+
   /**
-   * Atiende las peticiones de un diagrama de una en una, para que cada respuesta vea las
-   * anteriores, y avisa a la sala de a quién está respondiendo Trazo.
+   * Atiende las peticiones de un proyecto de una en una (hay una sola instancia de IA y cada
+   * respuesta debe ver las anteriores), y avisa de a quién está respondiendo Trazo.
    */
   private enqueue<T>(
-    diagramId: string,
+    conversation: AiConversationDocument,
     user: ChatUser,
     job: () => Promise<T>,
   ): Promise<T> {
-    const previous = this.queues.get(diagramId) ?? Promise.resolve();
+    const key = conversation.projectId;
+    const status = (busy: boolean) =>
+      this.emit(conversation, 'trazo_status', {
+        projectId: conversation.projectId,
+        channel: conversation.channel,
+        busy,
+        ...(busy ? { userName: user.fullName } : {}),
+      });
+    const previous = this.queues.get(key) ?? Promise.resolve();
     const run = previous
       .catch(() => undefined)
       .then(async () => {
-        this.collaborationGateway.emitToDiagram(diagramId, 'ai_status', {
-          diagramId,
-          busy: true,
-          userName: user.fullName,
-        });
-        return job();
+        status(true);
+        try {
+          return await job();
+        } finally {
+          status(false);
+        }
       });
     const tail = run.catch((err) =>
       this.logger.error(
         `Trazo no pudo atender una petición: ${(err as Error)?.message || err}`,
       ),
     );
-    this.queues.set(diagramId, tail);
+    this.queues.set(key, tail);
     void tail.then(() => {
-      if (this.queues.get(diagramId) !== tail) return;
-      this.queues.delete(diagramId);
-      this.collaborationGateway.emitToDiagram(diagramId, 'ai_status', {
-        diagramId,
-        busy: false,
-      });
+      if (this.queues.get(key) === tail) this.queues.delete(key);
     });
     return run;
   }

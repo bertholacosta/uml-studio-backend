@@ -8,6 +8,12 @@ import { ProjectRole } from '../entities/project-role.enum';
 
 export type AccessLevel = 'read' | 'write';
 
+export interface ProjectDiagramSummary {
+  id: string;
+  name: string;
+  classNames: string[];
+}
+
 interface AccessRow {
   project_id: string | null;
   created_by: string | null;
@@ -85,6 +91,39 @@ export class ProjectAccessService {
       projectName: row?.project_name || undefined,
       diagramName: row?.diagram_name || undefined,
     };
+  }
+
+  /** Diagramas del proyecto con los nombres de sus clases: Trazo los usa para elegir lienzo. */
+  async listProjectDiagrams(
+    projectId: string,
+  ): Promise<ProjectDiagramSummary[]> {
+    const rows = await this.dataSource.query<
+      { id: string; name: string; class_names: string[] | null }[]
+    >(
+      `SELECT d.id, d.name,
+              array_remove(array_agg(n.name ORDER BY n.name)
+                FILTER (WHERE n.is_anchor = false AND n.name <> ''), NULL) AS class_names
+         FROM diagrams d
+         LEFT JOIN uml_nodes n ON n.diagram_id = d.id
+        WHERE d.project_id = $1
+        GROUP BY d.id, d.name, d.created_at
+        ORDER BY d.created_at`,
+      [projectId],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      classNames: row.class_names || [],
+    }));
+  }
+
+  /** Nombre del proyecto. */
+  async getProjectName(projectId: string): Promise<string | undefined> {
+    const [row] = await this.dataSource.query<{ name: string }[]>(
+      'SELECT name FROM projects WHERE id = $1',
+      [projectId],
+    );
+    return row?.name;
   }
 
   private async getDiagramRole(

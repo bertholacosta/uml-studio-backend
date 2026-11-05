@@ -13,17 +13,27 @@ export class ChatAuthor {
 const ChatAuthorSchema = SchemaFactory.createForClass(ChatAuthor);
 
 /**
- * Conversación con Trazo en la pizarra de un diagrama. Es compartida: todos los
- * colaboradores del diagrama ven y continúan la misma. Al empezar una nueva, la
- * anterior se conserva como historial.
+ * team: canal del equipo del proyecto, como un canal de Slack; Trazo es un miembro más y solo
+ * responde cuando lo mencionan. direct: conversación privada de una persona con Trazo.
  */
-@Schema({ collection: 'ai_conversations', timestamps: true })
+export type ChatChannel = 'team' | 'direct';
+export const CHAT_CHANNELS: ChatChannel[] = ['team', 'direct'];
+
+/**
+ * Conversación de un proyecto: el canal del equipo o la conversación privada de una persona
+ * con Trazo. Al empezar una nueva, la anterior se conserva como historial.
+ */
+@Schema({ collection: 'chat_conversations', timestamps: true })
 export class AiConversation {
   @Prop({ required: true })
-  diagramId: string;
+  projectId: string;
 
-  @Prop()
-  projectId?: string;
+  @Prop({ type: String, required: true, enum: CHAT_CHANNELS })
+  channel: ChatChannel;
+
+  /** Dueño de la conversación privada (vacío en el canal del equipo). */
+  @Prop({ default: '' })
+  ownerId: string;
 
   @Prop({ type: ChatAuthorSchema, required: true })
   startedBy: ChatAuthor;
@@ -48,9 +58,9 @@ export class AiConversation {
 export type AiConversationDocument = HydratedDocument<AiConversation>;
 export const AiConversationSchema =
   SchemaFactory.createForClass(AiConversation);
-// Una sola conversación activa por diagrama
+// Un solo canal del equipo activo por proyecto y una conversación privada activa por persona
 AiConversationSchema.index(
-  { diagramId: 1 },
+  { projectId: 1, channel: 1, ownerId: 1 },
   { unique: true, partialFilterExpression: { active: true } },
 );
 
@@ -72,14 +82,17 @@ export class ChatProposal {
 }
 const ChatProposalSchema = SchemaFactory.createForClass(ChatProposal);
 
-/** Mensaje de la conversación: pregunta de un colaborador o respuesta de Trazo. */
-@Schema({ collection: 'ai_messages', timestamps: true })
+/** Mensaje de una conversación: de una persona del equipo o de Trazo. */
+@Schema({ collection: 'chat_messages', timestamps: true })
 export class AiMessage {
-  @Prop({ required: true, index: true })
+  @Prop({ required: true })
   conversationId: string;
 
   @Prop({ required: true, index: true })
-  diagramId: string;
+  projectId: string;
+
+  @Prop({ type: String, required: true, enum: CHAT_CHANNELS })
+  channel: ChatChannel;
 
   @Prop({ type: String, required: true, enum: ['user', 'assistant'] })
   role: ChatRole;
@@ -90,11 +103,22 @@ export class AiMessage {
   @Prop({ required: true })
   text: string;
 
+  /** Ids de las personas mencionadas con @ (y de Trazo, si lo llamaron). */
+  @Prop({ type: [String], default: undefined })
+  mentions?: string[];
+
+  /** Diagrama (lienzo) sobre el que trabajó Trazo o al que se refiere el mensaje. */
+  @Prop()
+  diagramId?: string;
+
+  @Prop()
+  diagramName?: string;
+
   /** Id temporal que asigna el navegador, para sustituir su mensaje provisional. */
   @Prop()
   clientId?: string;
 
-  /** Mensaje del usuario al que responde Trazo. */
+  /** Mensaje al que responde Trazo. */
   @Prop()
   replyTo?: string;
 

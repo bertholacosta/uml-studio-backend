@@ -20,8 +20,16 @@ interface ClientMetadata {
   userId: string;
   userName: string;
   diagramId: string;
+  projectId?: string;
   color: string;
   canEdit: boolean;
+}
+
+/** Quien sigue el chat del proyecto sin un diagrama abierto (p. ej. la app móvil). */
+interface ProjectListener {
+  userId: string;
+  userName: string;
+  projectId: string;
 }
 
 interface AuthenticatedUser {
@@ -43,6 +51,14 @@ export interface DiagramSnapshot {
   at: number;
 }
 
+export interface ConnectedUser {
+  userId: string;
+  userName: string;
+  /** Sin valor: sigue el chat sin un diagrama abierto. */
+  canEdit?: boolean;
+  diagramId?: string;
+}
+
 export interface NodeLockInfo {
   nodeId: string;
   userId: string;
@@ -57,6 +73,10 @@ const DEFAULT_COLOR = '#007ACC';
 
 /** Sala de Socket.IO de un diagrama: todos los que lo editan comparten esta sala. */
 const roomOf = (diagramId: string) => `diagram_${diagramId}`;
+/** Sala del proyecto: el canal del equipo con Trazo llega a todos sus miembros conectados. */
+const projectRoomOf = (projectId: string) => `project_${projectId}`;
+/** Sala personal: conversación privada con Trazo, en todas las pestañas de la persona. */
+const userRoomOf = (userId: string) => `user_${userId}`;
 
 @WebSocketGateway({
   namespace: '/collaboration',
@@ -81,6 +101,7 @@ export class CollaborationGateway
 
   private readonly logger = new Logger(CollaborationGateway.name);
   private readonly clientMap = new Map<string, ClientMetadata>();
+  private readonly projectListeners = new Map<string, ProjectListener>();
   // Bloqueos de nodos por diagrama: diagramId => (nodeId => NodeLockInfo)
   private readonly nodeLocks = new Map<string, Map<string, NodeLockInfo>>();
   // Último estado del diagrama que circuló por la sala: lo usa Trazo si cambió mientras pensaba
@@ -114,6 +135,7 @@ export class CollaborationGateway
       if (!user || !user.isActive) {
         throw new Error('usuario inexistente o inactivo');
       }
+      await client.join(userRoomOf(user.id));
       return { id: user.id, fullName: user.fullName };
     } catch (err: any) {
       this.logger.warn(
@@ -127,6 +149,33 @@ export class CollaborationGateway
 
   handleDisconnect(client: Socket): void {
     this.leave(client);
+    this.projectListeners.delete(client.id);
+  }
+
+  /** Seguir el chat de un proyecto sin abrir ningún diagrama (app móvil, panel de proyecto). */
+  @SubscribeMessage('join_project')
+  async handleJoinProject(
+    @MessageBody() data: { projectId: string },
+    @ConnectedSocket() client: Socket,
+  ): Promise<{ success: boolean }> {
+    try {
+      const user: AuthenticatedUser | null = await client.data.authPromise;
+      if (!user || !isUUID(data?.projectId)) return { success: false };
+      await this.access.assertProjectAccess(data.projectId, user.id, 'read');
+
+      const previous = this.projectListeners.get(client.id);
+      if (previous) await client.leave(projectRoomOf(previous.projectId));
+      await client.join(projectRoomOf(data.projectId));
+      this.projectListeners.set(client.id, {
+        userId: user.id,
+        userName: user.fullName,
+        projectId: data.projectId,
+      });
+      return { success: true };
+    } catch (err) {
+      this.logger.warn(`Error en join_project: ${err}`);
+      return { success: false };
+    }
   }
 
   @SubscribeMessage('join_room')
@@ -151,17 +200,22 @@ export class CollaborationGateway
         user.id,
       );
 
+      const { projectId } = await this.access.getDiagramContext(data.diagramId);
+
       // Si el socket ya estaba en otro diagrama, salir de él antes de unirse al nuevo
       this.leave(client);
 
       const room = roomOf(data.diagramId);
       await client.join(room);
+      // Quien abre un diagrama también sigue el canal del equipo de su proyecto
+      if (projectId) await client.join(projectRoomOf(projectId));
 
       const color = data.color || DEFAULT_COLOR;
       this.clientMap.set(client.id, {
         userId: user.id,
         userName: user.fullName,
         diagramId: data.diagramId,
+        projectId,
         color,
         canEdit: accessLevel === 'write',
       });
@@ -352,19 +406,41 @@ export class CollaborationGateway
     return this.snapshots.get(diagramId);
   }
 
-  /** Quién está ahora en la pizarra y si puede editar, para que Trazo lo sepa. */
-  connectedUsers(diagramId: string): { userName: string; canEdit: boolean }[] {
-    const byUser = new Map<string, { userName: string; canEdit: boolean }>();
+  /**
+   * Quién está conectado al proyecto y en qué diagrama, para que Trazo lo sepa. Los que solo
+   * siguen el chat (app móvil) aparecen sin diagrama.
+   */
+  connectedUsers(projectId: string): ConnectedUser[] {
+    const byUser = new Map<string, ConnectedUser>();
+    for (const l of this.projectListeners.values()) {
+      if (l.projectId !== projectId) continue;
+      byUser.set(l.userId, { userId: l.userId, userName: l.userName });
+    }
     for (const c of this.clientMap.values()) {
-      if (c.diagramId !== diagramId) continue;
-      byUser.set(c.userId, { userName: c.userName, canEdit: c.canEdit });
+      if (c.projectId !== projectId) continue;
+      byUser.set(c.userId, {
+        userId: c.userId,
+        userName: c.userName,
+        canEdit: c.canEdit,
+        diagramId: c.diagramId,
+      });
     }
     return Array.from(byUser.values());
   }
 
-  /** Emite un evento a todos los que tienen abierto el diagrama (chat compartido con Trazo). */
+  /** Emite un evento a todos los que tienen abierto el diagrama. */
   emitToDiagram(diagramId: string, event: string, payload: unknown): void {
     this.server?.to(roomOf(diagramId)).emit(event, payload);
+  }
+
+  /** Emite al canal del equipo del proyecto. */
+  emitToProject(projectId: string, event: string, payload: unknown): void {
+    this.server?.to(projectRoomOf(projectId)).emit(event, payload);
+  }
+
+  /** Emite a todas las pestañas de una persona (conversación privada con Trazo). */
+  emitToUser(userId: string, event: string, payload: unknown): void {
+    this.server?.to(userRoomOf(userId)).emit(event, payload);
   }
 
   // --- Internos ---
@@ -376,6 +452,9 @@ export class CollaborationGateway
     this.clientMap.delete(client.id);
     const room = roomOf(meta.diagramId);
     client.leave(room);
+    if (meta.projectId && !this.projectListeners.has(client.id)) {
+      client.leave(projectRoomOf(meta.projectId));
+    }
 
     // Liberar los bloqueos del usuario si ya no le queda otra pestaña abierta en el diagrama
     const stillConnected = this.participantsOf(meta.diagramId).some(

@@ -2,6 +2,7 @@ import { Logger, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ProjectsModule } from '../projects/projects.module';
+import { DiagramsModule } from '../diagrams/diagrams.module';
 import {
   AI_PROVIDER,
   AI_VISION_PROVIDER,
@@ -9,6 +10,7 @@ import {
 } from './providers/ai-provider';
 import { GeminiProvider } from './providers/gemini.provider';
 import { OllamaProvider } from './providers/ollama.provider';
+import { BedrockProvider } from './providers/bedrock.provider';
 import {
   AiConversation,
   AiConversationSchema,
@@ -19,7 +21,7 @@ import { AiConversationService } from './conversation/ai-conversation.service';
 import { AiAssistantService } from './services/ai-assistant.service';
 import { AiAssistantController } from './controllers/ai-assistant.controller';
 
-type ProviderName = 'ollama' | 'gemini';
+type ProviderName = 'ollama' | 'gemini' | 'bedrock';
 
 const PROVIDERS: Record<
   ProviderName,
@@ -27,6 +29,7 @@ const PROVIDERS: Record<
 > = {
   ollama: OllamaProvider,
   gemini: GeminiProvider,
+  bedrock: BedrockProvider,
 };
 
 function providerName(
@@ -44,6 +47,7 @@ function providerName(
 @Module({
   imports: [
     ProjectsModule,
+    DiagramsModule,
     MongooseModule.forFeature([
       { name: AiConversation.name, schema: AiConversationSchema },
       { name: AiMessage.name, schema: AiMessageSchema },

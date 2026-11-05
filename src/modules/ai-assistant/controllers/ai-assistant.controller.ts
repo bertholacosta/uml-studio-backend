@@ -4,108 +4,117 @@ import {
   Post,
   Body,
   Param,
+  ParseEnumPipe,
   ParseUUIDPipe,
   Query,
   HttpStatus,
   HttpCode,
 } from '@nestjs/common';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
-import { AI_LIMIT } from '../../../common/guards/throttle.guard';
+import { AI_LIMIT, CHAT_LIMIT } from '../../../common/guards/throttle.guard';
 import {
   ApiTags,
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiParam,
 } from '@nestjs/swagger';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { User } from '../../auth/entities/user.entity';
 import { AiAssistantService } from '../services/ai-assistant.service';
-import { AiPromptDto, AiVisionPromptDto } from '../dtos/ai-request.dto';
+import { AiVisionPromptDto } from '../dtos/ai-request.dto';
 import { AiResponseDto } from '../dtos/ai-response.dto';
 import {
-  AiAcceptedDto,
   ApplyProposalDto,
+  ChatAcceptedDto,
   ConversationDto,
   ConversationQueryDto,
+  SendChatMessageDto,
 } from '../dtos/ai-chat.dto';
+import type { ChatChannel } from '../conversation/ai-conversation.schema';
 
-@ApiTags('ai')
-// Cada llamada ocupa el servidor de IA
-@Throttle({ default: AI_LIMIT })
+enum ChannelParam {
+  team = 'team',
+  direct = 'direct',
+}
+
+const channelParam = new ParseEnumPipe(ChannelParam);
+
+@ApiTags('chat')
 @ApiBearerAuth()
-@Controller('ai')
+@Controller()
 export class AiAssistantController {
   constructor(private readonly aiAssistantService: AiAssistantService) {}
 
-  @Get('diagrams/:diagramId/conversation')
+  @Get('chat/projects/:projectId/:channel')
   @SkipThrottle()
+  @ApiParam({ name: 'channel', enum: ChannelParam })
   @ApiOperation({
     summary:
-      'Conversación compartida con Trazo en la pizarra del diagrama (últimos mensajes)',
+      'Canal del equipo del proyecto (team) o conversación privada con Trazo (direct): últimos mensajes',
   })
   @ApiResponse({ status: 200, type: ConversationDto })
   async getConversation(
-    @Param('diagramId', ParseUUIDPipe) diagramId: string,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('channel', channelParam) channel: ChatChannel,
     @Query() query: ConversationQueryDto,
     @CurrentUser() user: User,
   ): Promise<ConversationDto> {
     return this.aiAssistantService.getConversation(
-      diagramId,
+      projectId,
+      channel,
       user,
       query.limit,
     );
   }
 
-  @Post('diagrams/:diagramId/conversation')
+  @Post('chat/projects/:projectId/:channel/reset')
   @SkipThrottle()
+  @ApiParam({ name: 'channel', enum: ChannelParam })
   @ApiOperation({
     summary:
-      'Empieza una conversación nueva para toda la pizarra (la anterior queda guardada)',
+      'Empieza una conversación nueva (la anterior queda guardada). El canal del equipo solo lo reinicia el administrador',
   })
   @ApiResponse({ status: 201, type: ConversationDto })
   @ApiResponse({
     status: 403,
-    description: 'El usuario no puede editar el diagrama',
+    description: 'Solo el administrador reinicia el canal del equipo',
   })
   async startConversation(
-    @Param('diagramId', ParseUUIDPipe) diagramId: string,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('channel', channelParam) channel: ChatChannel,
     @CurrentUser() user: User,
   ): Promise<ConversationDto> {
-    return this.aiAssistantService.startConversation(diagramId, user);
+    return this.aiAssistantService.startConversation(projectId, channel, user);
   }
 
-  @Post('prompt')
+  @Post('chat/projects/:projectId/messages')
   @HttpCode(HttpStatus.ACCEPTED)
+  @Throttle({ default: CHAT_LIMIT })
   @ApiOperation({
-    summary:
-      'Pregunta o instrucción a Trazo: responde como mentor, propone cambios o edita el diagrama',
+    summary: 'Envía un mensaje al canal del equipo o a la conversación privada',
     description:
-      'Devuelve al instante el mensaje guardado; la respuesta de Trazo (y el diagrama modificado, si lo hay) llega a toda la pizarra por Socket.IO: eventos ai_message y diagram_synced.',
+      'En el canal del equipo, Trazo solo responde si se le menciona con @Trazo; en la conversación privada responde siempre. Con #Diagrama se indica el lienzo; si no, Trazo usa el diagrama abierto, el que contiene las clases mencionadas o el del hilo, y si no lo sabe pregunta. Su respuesta llega por Socket.IO (evento chat_message).',
   })
-  @ApiResponse({
-    status: 202,
-    description: 'Mensaje aceptado y en la cola de Trazo',
-    type: AiAcceptedDto,
-  })
-  @ApiResponse({
-    status: 403,
-    description: 'El usuario no tiene acceso al diagrama',
-  })
-  async processPrompt(
-    @Body() dto: AiPromptDto,
+  @ApiResponse({ status: 202, type: ChatAcceptedDto })
+  async sendMessage(
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Body() dto: SendChatMessageDto,
     @CurrentUser() user: User,
-  ): Promise<AiAcceptedDto> {
-    const { userMessage } = await this.aiAssistantService.submitTextPrompt(
+  ): Promise<ChatAcceptedDto> {
+    const { message, result } = await this.aiAssistantService.submitMessage(
+      projectId,
       dto,
       user,
     );
-    return { status: 'queued', userMessage };
+    return { status: result ? 'queued' : 'sent', message };
   }
 
-  @Post('messages/:messageId/apply')
+  @Post('chat/messages/:messageId/apply')
   @HttpCode(HttpStatus.OK)
+  @Throttle({ default: CHAT_LIMIT })
   @ApiOperation({
-    summary: 'Aplica al diagrama los cambios que Trazo propuso en un mensaje',
+    summary: 'Aplica a su diagrama los cambios que Trazo propuso en un mensaje',
   })
   @ApiResponse({ status: 200, type: AiResponseDto })
   @ApiResponse({ status: 404, description: 'Propuesta no encontrada' })
@@ -118,19 +127,17 @@ export class AiAssistantController {
     return this.aiAssistantService.applyProposal(messageId, dto, user);
   }
 
-  @Post('vision-diagram')
+  @Post('ai/vision-diagram')
   @HttpCode(HttpStatus.ACCEPTED)
+  // Cada imagen ocupa el servidor de IA
+  @Throttle({ default: AI_LIMIT })
   @ApiOperation({
     summary:
-      'Trazo digitaliza un diagrama UML desde una imagen (foto, pizarra o captura)',
+      'Trazo digitaliza en un diagrama un diagrama UML de una imagen (foto, pizarra o captura)',
     description:
-      'Devuelve al instante; el diagrama digitalizado llega por Socket.IO como en /ai/prompt.',
+      'La imagen se publica en el canal indicado y el resultado llega por Socket.IO.',
   })
-  @ApiResponse({
-    status: 202,
-    description: 'Imagen aceptada y en la cola de Trazo',
-    type: AiAcceptedDto,
-  })
+  @ApiResponse({ status: 202, type: ChatAcceptedDto })
   @ApiResponse({
     status: 403,
     description: 'El usuario no puede editar el diagrama',
@@ -138,11 +145,11 @@ export class AiAssistantController {
   async processVisionDiagram(
     @Body() dto: AiVisionPromptDto,
     @CurrentUser() user: User,
-  ): Promise<AiAcceptedDto> {
-    const { userMessage } = await this.aiAssistantService.submitVisionDiagram(
+  ): Promise<ChatAcceptedDto> {
+    const { message } = await this.aiAssistantService.submitVisionDiagram(
       dto,
       user,
     );
-    return { status: 'queued', userMessage };
+    return { status: 'queued', message };
   }
 }

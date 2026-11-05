@@ -10,9 +10,10 @@ describe('AiAssistantController', () => {
 
   beforeEach(async () => {
     const mockService = {
-      submitTextPrompt: jest.fn(),
+      submitMessage: jest.fn(),
       submitVisionDiagram: jest.fn(),
       getConversation: jest.fn(),
+      startConversation: jest.fn(),
       applyProposal: jest.fn(),
     };
 
@@ -29,59 +30,68 @@ describe('AiAssistantController', () => {
     expect(controller).toBeDefined();
   });
 
-  it('POST /prompt acepta el mensaje al instante sin esperar a Trazo', async () => {
-    const dto = { prompt: 'Crea tabla Pago', diagramId: 'd-1' };
-    const userMessage = { id: 'm-1', text: 'Crea tabla Pago' } as any;
+  it('POST /chat/projects/:id/messages: un mensaje entre personas queda enviado', async () => {
+    const dto = { channel: 'team' as const, text: 'Luis, ¿lo revisas?' };
+    const message = { id: 'm-1' } as any;
+    service.submitMessage.mockResolvedValue({ message });
+
+    await expect(controller.sendMessage('p-1', dto, user)).resolves.toEqual({
+      status: 'sent',
+      message,
+    });
+    expect(service.submitMessage).toHaveBeenCalledWith('p-1', dto, user);
+  });
+
+  it('POST /chat/projects/:id/messages: con @Trazo queda en cola sin esperar la respuesta', async () => {
+    const dto = { channel: 'team' as const, text: '@Trazo revisa Pedido' };
+    const message = { id: 'm-2' } as any;
     // La respuesta del modelo nunca llega: el controlador no debe esperarla
-    service.submitTextPrompt.mockResolvedValue({
-      userMessage,
+    service.submitMessage.mockResolvedValue({
+      message,
       result: new Promise(() => undefined),
     });
 
-    await expect(controller.processPrompt(dto, user)).resolves.toEqual({
+    await expect(controller.sendMessage('p-1', dto, user)).resolves.toEqual({
       status: 'queued',
-      userMessage,
+      message,
     });
-    expect(service.submitTextPrompt).toHaveBeenCalledWith(dto, user);
   });
 
-  it('POST /vision-diagram acepta la imagen y responde por el socket', async () => {
+  it('POST /ai/vision-diagram acepta la imagen y responde por el socket', async () => {
     const dto = {
       imageBase64: 'base64str',
       mimeType: 'image/png',
       diagramId: 'd-1',
     };
-    const userMessage = { id: 'm-2' } as any;
+    const message = { id: 'm-3' } as any;
     service.submitVisionDiagram.mockResolvedValue({
-      userMessage,
+      message,
       result: new Promise(() => undefined),
     });
 
     await expect(controller.processVisionDiagram(dto, user)).resolves.toEqual({
       status: 'queued',
-      userMessage,
+      message,
     });
     expect(service.submitVisionDiagram).toHaveBeenCalledWith(dto, user);
   });
 
-  it('GET /diagrams/:id/conversation devuelve la conversación compartida', async () => {
-    const conversation = {
-      id: 'c-1',
-      diagramId: 'd-1',
-      startedBy: { userId: 'user-1', userName: 'Ana Pérez' },
-      createdAt: new Date(),
-      messages: [],
-      hasMore: false,
-    };
+  it('GET /chat/projects/:id/:channel devuelve la conversación', async () => {
+    const conversation = { id: 'c-1', channel: 'direct' } as any;
     service.getConversation.mockResolvedValue(conversation);
 
     await expect(
-      controller.getConversation('d-1', { limit: 20 }, user),
+      controller.getConversation('p-1', 'direct', { limit: 20 }, user),
     ).resolves.toBe(conversation);
-    expect(service.getConversation).toHaveBeenCalledWith('d-1', user, 20);
+    expect(service.getConversation).toHaveBeenCalledWith(
+      'p-1',
+      'direct',
+      user,
+      20,
+    );
   });
 
-  it('POST /messages/:id/apply delega en applyProposal', async () => {
+  it('POST /chat/messages/:id/apply delega en applyProposal', async () => {
     const dto = { currentNodes: [], currentConnections: [] };
     await controller.applyProposal('m-1', dto, user);
     expect(service.applyProposal).toHaveBeenCalledWith('m-1', dto, user);

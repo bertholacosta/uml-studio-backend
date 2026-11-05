@@ -67,6 +67,15 @@ export class AiPromptDto extends AiDiagramContextDto {
 }
 
 export class AiVisionPromptDto extends AiDiagramContextDto {
+  @ApiPropertyOptional({
+    enum: ['team', 'direct'],
+    default: 'team',
+    description: 'Conversación en la que se publica la imagen',
+  })
+  @IsOptional()
+  @IsIn(['team', 'direct'])
+  channel?: 'team' | 'direct';
+
   @ApiProperty({
     description: 'Imagen del diagrama en Base64 (admite data URI)',
     example: 'data:image/png;base64,iVBORw0KGgo...',

@@ -39,7 +39,11 @@ Parameters:
   AiProvider:
     Type: String
     Default: ollama
-    AllowedValues: [ollama, gemini]
+    AllowedValues: [ollama, bedrock, gemini]
+  BedrockModelId:
+    Type: String
+    Default: qwen.qwen3-32b-v1:0
+    Description: Modelo de Bedrock si AiProvider=bedrock
   OllamaBaseUrl:
     Type: String
     Default: http://localhost:11434
@@ -214,6 +218,10 @@ Resources:
               - Effect: Allow
                 Action: s3:GetObject
                 Resource: !Sub '${DeployBucket.Arn}/*'
+              # Trazo con AI_PROVIDER=bedrock (la API Converse usa este permiso)
+              - Effect: Allow
+                Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+                Resource: !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/*'
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -406,6 +414,12 @@ Resources:
       Name: !Sub '/${AppName}/OLLAMA_BASE_URL'
       Type: String
       Value: !Ref OllamaBaseUrl
+  BedrockModelParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${AppName}/BEDROCK_MODEL_ID'
+      Type: String
+      Value: !Ref BedrockModelId
   OllamaModelParam:
     Type: AWS::SSM::Parameter
     Properties:

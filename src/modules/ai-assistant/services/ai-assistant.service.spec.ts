@@ -8,43 +8,52 @@ import {
 } from '../providers/ai-provider';
 import { CollaborationGateway } from '../../projects/gateways/collaboration.gateway';
 import { ProjectAccessService } from '../../projects/services/project-access.service';
+import { DiagramService } from '../../diagrams/services/diagram.service';
 import { AiConversationService } from '../conversation/ai-conversation.service';
 import { AiPromptDto } from '../dtos/ai-request.dto';
 import { findNodeFuzzy } from '../domain/node-matching';
 import { resolveManyToManyRelationships } from '../domain/many-to-many.resolver';
 
-/** Conversación en memoria con la misma interfaz que la de MongoDB. */
+/** Conversaciones en memoria con la misma interfaz que las de MongoDB. */
 class FakeConversations {
   messages: any[] = [];
-  readonly conversation = {
-    id: 'conv-1',
-    _id: 'conv-1',
-    diagramId: 'diag-123',
-    summary: '',
-  };
 
-  getActive = jest.fn(async (diagramId: string) => ({
-    ...this.conversation,
-    diagramId,
-  }));
+  getActive = jest.fn(
+    async (projectId: string, channel: string, author: any) => ({
+      id: `conv-${channel}`,
+      _id: `conv-${channel}`,
+      projectId,
+      channel,
+      ownerId: channel === 'direct' ? author.userId : '',
+      summary: '',
+    }),
+  );
   addMessage = jest.fn(async (conversation: any, message: any) => {
     const saved = {
       id: `m${this.messages.length + 1}`,
       status: 'success',
       createdAt: new Date(),
       conversationId: conversation.id,
-      diagramId: conversation.diagramId,
+      projectId: conversation.projectId,
+      channel: conversation.channel,
       ...message,
     };
     this.messages.push(saved);
     return saved;
   });
-  contextFor = jest.fn(async (_conversation: any, excludeId?: string) => ({
+  contextFor = jest.fn(async (conversation: any, excludeId?: string) => ({
     summary: '',
     history: this.messages.filter(
-      (m) => m.id !== excludeId && m.status !== 'error',
+      (m) =>
+        m.conversationId === conversation.id &&
+        m.id !== excludeId &&
+        m.status !== 'error',
     ),
   }));
+  lastDiagramInThread = jest.fn(
+    async () =>
+      [...this.messages].reverse().find((m) => m.diagramId)?.diagramId,
+  );
   messagesToSummarize = jest.fn(async () => null);
   findMessage = jest.fn(
     async (id: string) => this.messages.find((m) => m.id === id) || null,
@@ -56,6 +65,13 @@ class FakeConversations {
     return message;
   });
   revertProposal = jest.fn();
+  startNew = jest.fn(async (projectId: string, channel: string) => ({
+    id: 'conv-new',
+    projectId,
+    channel,
+    ownerId: '',
+  }));
+  toConversationDto = jest.fn((c: any) => ({ id: c.id, channel: c.channel }));
   toDto = jest.fn((m: any) => ({ ...m }));
 }
 
@@ -63,15 +79,20 @@ describe('AiAssistantService', () => {
   let service: AiAssistantService;
   let aiProvider: { generate: jest.Mock };
   let access: {
+    assertProjectAccess: jest.Mock;
     assertDiagramAccess: jest.Mock;
     getDiagramContext: jest.Mock;
+    listProjectDiagrams: jest.Mock;
+    getProjectName: jest.Mock;
   };
+  let diagrams: { findOne: jest.Mock; saveAst: jest.Mock };
   let conversations: FakeConversations;
   let collaborationGateway: {
     broadcastAiMutation: jest.Mock;
     lockNodesForAi: jest.Mock;
     unlockNodesForAi: jest.Mock;
-    emitToDiagram: jest.Mock;
+    emitToProject: jest.Mock;
+    emitToUser: jest.Mock;
     latestSnapshot: jest.Mock;
     connectedUsers: jest.Mock;
   };
@@ -91,17 +112,31 @@ describe('AiAssistantService', () => {
   beforeEach(async () => {
     aiProvider = { generate: jest.fn() };
     access = {
+      assertProjectAccess: jest.fn().mockResolvedValue('EDITOR'),
       assertDiagramAccess: jest.fn().mockResolvedValue('EDITOR'),
-      getDiagramContext: jest
+      getDiagramContext: jest.fn().mockResolvedValue({
+        projectId: 'proj-1',
+        projectName: 'Tienda',
+        diagramName: 'Ventas',
+      }),
+      listProjectDiagrams: jest
         .fn()
-        .mockResolvedValue({ projectName: 'Tienda', diagramName: 'Ventas' }),
+        .mockResolvedValue([
+          { id: 'diag-123', name: 'Ventas', classNames: [] },
+        ]),
+      getProjectName: jest.fn().mockResolvedValue('Tienda'),
+    };
+    diagrams = {
+      findOne: jest.fn().mockResolvedValue({ nodes: [], connections: [] }),
+      saveAst: jest.fn().mockResolvedValue({}),
     };
     conversations = new FakeConversations();
     collaborationGateway = {
       broadcastAiMutation: jest.fn(),
       lockNodesForAi: jest.fn(),
       unlockNodesForAi: jest.fn(),
-      emitToDiagram: jest.fn(),
+      emitToProject: jest.fn(),
+      emitToUser: jest.fn(),
       latestSnapshot: jest.fn(),
       connectedUsers: jest.fn().mockReturnValue([]),
     };
@@ -113,6 +148,7 @@ describe('AiAssistantService', () => {
         { provide: AI_VISION_PROVIDER, useValue: aiProvider },
         { provide: CollaborationGateway, useValue: collaborationGateway },
         { provide: ProjectAccessService, useValue: access },
+        { provide: DiagramService, useValue: diagrams },
         { provide: AiConversationService, useValue: conversations },
       ],
     }).compile();
@@ -796,14 +832,20 @@ describe('AiAssistantService', () => {
         new Promise((resolve) => (answer = resolve)),
       );
 
-      const { userMessage, result } = await service.submitTextPrompt(
-        { ...baseDto, clientId: 'c-1' },
+      const { message, result } = await service.submitMessage(
+        'proj-1',
+        {
+          channel: 'direct',
+          text: baseDto.prompt,
+          clientId: 'c-1',
+          activeDiagramId: 'diag-123',
+        },
         ana,
       );
-      expect(userMessage).toMatchObject({ role: 'user', clientId: 'c-1' });
-      expect(collaborationGateway.emitToDiagram).toHaveBeenCalledWith(
-        'diag-123',
-        'ai_message',
+      expect(message).toMatchObject({ role: 'user', clientId: 'c-1' });
+      expect(collaborationGateway.emitToUser).toHaveBeenCalledWith(
+        'user-1',
+        'chat_message',
         expect.objectContaining({ role: 'user' }),
       );
 
@@ -819,17 +861,18 @@ describe('AiAssistantService', () => {
     });
 
     it('rechaza a quien no es miembro sin llamar al modelo', async () => {
-      access.assertDiagramAccess.mockRejectedValueOnce(
+      access.assertProjectAccess.mockRejectedValueOnce(
         new ForbiddenException(),
       );
       await expect(run(baseDto)).rejects.toThrow(ForbiddenException);
       expect(aiProvider.generate).not.toHaveBeenCalled();
     });
 
-    it('envía al modelo la conversación del equipo con el nombre de cada persona', async () => {
+    it('envía al modelo la conversación con el nombre de cada persona', async () => {
       conversations.messages.push(
         {
           id: 'm-a',
+          conversationId: 'conv-direct',
           role: 'user',
           author: { userId: 'user-2', userName: 'Luis Rojas' },
           text: 'crea la tabla Cliente',
@@ -837,6 +880,7 @@ describe('AiAssistantService', () => {
         },
         {
           id: 'm-b',
+          conversationId: 'conv-direct',
           role: 'assistant',
           author: { userId: 'ai_assistant', userName: 'Trazo' },
           text: 'Luis, creé Cliente',
@@ -871,10 +915,11 @@ describe('AiAssistantService', () => {
       const sent = request.parts[0].text as string;
       expect(sent).toContain('PROYECTO: Tienda');
       expect(sent).toContain('Ana Pérez (editor), Luis Rojas (solo lectura)');
+      expect(sent).toContain('LIENZO: #Ventas');
       expect(sent).toContain('MENSAJE DE Ana Pérez (puede editar)');
     });
 
-    it('responde una pregunta sin tocar el diagrama, dirigiéndose a quien pregunta y compartiéndolo con la sala', async () => {
+    it('responde una pregunta sin tocar el diagrama, dirigiéndose a quien pregunta', async () => {
       mockModelResponse(
         JSON.stringify({
           reply:
@@ -894,17 +939,28 @@ describe('AiAssistantService', () => {
         'Ana, un atributo derivado se calcula a partir de otros, como /total en Pedido.',
       );
       expect(collaborationGateway.broadcastAiMutation).not.toHaveBeenCalled();
-      const shared = collaborationGateway.emitToDiagram.mock.calls
-        .filter(([, event]) => event === 'ai_message')
-        .map(([, , message]) => [message.role, message.author.userName]);
-      expect(shared).toEqual([
-        ['user', 'Ana Pérez'],
-        ['assistant', 'Trazo'],
+      expect(diagrams.saveAst).not.toHaveBeenCalled();
+      // La conversación privada solo le llega a Ana
+      const sent = collaborationGateway.emitToUser.mock.calls
+        .filter(([, event]) => event === 'chat_message')
+        .map(([userId, , message]) => [
+          userId,
+          message.role,
+          message.author.userName,
+        ]);
+      expect(sent).toEqual([
+        ['user-1', 'user', 'Ana Pérez'],
+        ['user-1', 'assistant', 'Trazo'],
       ]);
+      expect(collaborationGateway.emitToProject).not.toHaveBeenCalledWith(
+        'proj-1',
+        'chat_message',
+        expect.anything(),
+      );
     });
 
     it('convierte en propuesta el cambio que pide alguien de solo lectura', async () => {
-      access.assertDiagramAccess.mockResolvedValueOnce('VIEWER');
+      access.assertProjectAccess.mockResolvedValueOnce('VIEWER');
       mockModelResponse(
         JSON.stringify({
           reply: 'Ana, creé Pago.',
@@ -923,12 +979,19 @@ describe('AiAssistantService', () => {
         'diag-123',
         [],
       );
-      expect(conversations.messages[1].proposal).toEqual({ state: 'pending' });
+      expect(conversations.messages[1]).toMatchObject({
+        proposal: { state: 'pending' },
+        diagramId: 'diag-123',
+        diagramName: 'Ventas',
+      });
     });
 
-    it('aplica una propuesta una sola vez sobre el diagrama actual', async () => {
+    it('aplica una propuesta una sola vez y la guarda en su diagrama', async () => {
       conversations.messages.push({
         id: 'm-prop',
+        conversationId: 'conv-team',
+        projectId: 'proj-1',
+        channel: 'team',
         diagramId: 'diag-123',
         role: 'assistant',
         text: 'Ana, te propongo Pago',
@@ -951,14 +1014,24 @@ describe('AiAssistantService', () => {
 
       const result = await service.applyProposal(
         'm-prop',
-        { currentNodes, currentConnections: [] },
+        { activeDiagramId: 'diag-123', currentNodes, currentConnections: [] },
         luis,
       );
       expect(result.nodes.map((n) => n.name)).toEqual(['Cliente', 'Pago']);
       expect(result.assistantMessage?.proposal?.appliedBy?.userName).toBe(
         'Luis Rojas',
       );
+      expect(diagrams.saveAst).toHaveBeenCalledWith(
+        'diag-123',
+        expect.objectContaining({ nodes: expect.any(Array) }),
+        'user-2',
+      );
       expect(collaborationGateway.broadcastAiMutation).toHaveBeenCalled();
+      expect(collaborationGateway.emitToProject).toHaveBeenCalledWith(
+        'proj-1',
+        'chat_message',
+        expect.objectContaining({ id: 'm-prop' }),
+      );
 
       await expect(
         service.applyProposal('m-prop', { currentNodes }, luis),
@@ -1098,6 +1171,167 @@ describe('AiAssistantService', () => {
       expect(result.nodes.every((n) => typeof n.position.x === 'number')).toBe(
         true,
       );
+    });
+  });
+
+  describe('canal del equipo', () => {
+    const twoDiagrams = [
+      { id: 'diag-123', name: 'Ventas', classNames: ['Cliente', 'Pedido'] },
+      { id: 'diag-456', name: 'Inventario', classNames: ['Producto'] },
+    ];
+    const answer = () =>
+      mockModelResponse(
+        JSON.stringify({ reply: 'Ana, ok', intent: 'answer', operations: [] }),
+      );
+    const addPago = () =>
+      mockModelResponse(
+        JSON.stringify({
+          reply: 'Ana, creé Pago.',
+          intent: 'edit',
+          changesSummary: 'Clase Pago',
+          operations: [
+            {
+              op: 'add_class',
+              name: 'Pago',
+              attributes: [{ name: 'id', type: 'UUID' }],
+              methods: [],
+            },
+          ],
+        }),
+      );
+
+    it('un mensaje entre personas se comparte con el equipo sin llamar a Trazo', async () => {
+      const { message, result } = await service.submitMessage(
+        'proj-1',
+        {
+          channel: 'team',
+          text: 'Luis, ¿revisas Pedido?',
+          mentions: ['user-2'],
+        },
+        ana,
+      );
+      expect(result).toBeUndefined();
+      expect(aiProvider.generate).not.toHaveBeenCalled();
+      expect(message).toMatchObject({ mentions: ['user-2'] });
+      expect(collaborationGateway.emitToProject).toHaveBeenCalledWith(
+        'proj-1',
+        'chat_message',
+        expect.objectContaining({ text: 'Luis, ¿revisas Pedido?' }),
+      );
+    });
+
+    it('Trazo responde en el canal cuando lo mencionan con @Trazo', async () => {
+      answer();
+      const { message, result } = await service.submitMessage(
+        'proj-1',
+        { channel: 'team', text: '@Trazo ¿qué es una composición?' },
+        ana,
+      );
+      expect(message.mentions).toEqual(['ai_assistant']);
+      await expect(result).resolves.toMatchObject({ action: 'answer' });
+      const sent = aiProvider.generate.mock.calls[0][0].parts[0].text;
+      expect(sent).toContain('DÓNDE: canal del equipo');
+      expect(collaborationGateway.emitToProject).toHaveBeenCalledWith(
+        'proj-1',
+        'trazo_status',
+        expect.objectContaining({ busy: true, userName: 'Ana Pérez' }),
+      );
+    });
+
+    it('trabaja en el diagrama marcado con # aunque nadie lo tenga abierto y lo guarda', async () => {
+      access.listProjectDiagrams.mockResolvedValue(twoDiagrams);
+      diagrams.findOne.mockResolvedValue({
+        nodes: [
+          {
+            id: 'p',
+            name: 'Producto',
+            positionX: 10,
+            positionY: 20,
+            attributes: [],
+            methods: [],
+          },
+        ],
+        connections: [],
+      });
+      addPago();
+
+      const { result } = await service.submitMessage(
+        'proj-1',
+        {
+          channel: 'team',
+          text: '@Trazo agrega la clase Pago en #Inventario',
+          activeDiagramId: 'diag-123',
+        },
+        ana,
+      );
+      const response = await result;
+
+      expect(diagrams.findOne).toHaveBeenCalledWith('diag-456', 'user-1');
+      expect(response?.nodes.map((n) => n.name)).toEqual(['Producto', 'Pago']);
+      expect(diagrams.saveAst).toHaveBeenCalledWith(
+        'diag-456',
+        expect.objectContaining({
+          nodes: expect.arrayContaining([
+            expect.objectContaining({ name: 'Producto', positionX: 10 }),
+          ]),
+        }),
+        'user-1',
+      );
+      expect(collaborationGateway.broadcastAiMutation).toHaveBeenCalledWith(
+        'diag-456',
+        expect.any(Array),
+        expect.any(Array),
+      );
+      expect(response?.assistantMessage).toMatchObject({
+        diagramId: 'diag-456',
+        diagramName: 'Inventario',
+      });
+    });
+
+    it('deduce el diagrama por las clases que menciona el mensaje', async () => {
+      access.listProjectDiagrams.mockResolvedValue(twoDiagrams);
+      answer();
+      await (
+        await service.submitMessage(
+          'proj-1',
+          { channel: 'team', text: '@Trazo ¿Producto necesita un precio?' },
+          ana,
+        )
+      ).result;
+      const sent = aiProvider.generate.mock.calls[0][0].parts[0].text;
+      expect(sent).toContain(
+        'LIENZO: #Inventario (es el único diagrama con las clases que menciona)',
+      );
+    });
+
+    it('pregunta en qué diagrama si no puede deducirlo y no guarda nada', async () => {
+      access.listProjectDiagrams.mockResolvedValue(twoDiagrams);
+      addPago();
+      const response = await (
+        await service.submitMessage(
+          'proj-1',
+          { channel: 'team', text: '@Trazo agrega una clase Pago' },
+          ana,
+        )
+      ).result;
+
+      expect(response?.action).toBe('clarification_required');
+      expect(response?.message).toBe(
+        'Ana, ¿en qué diagrama lo hago? Indícalo con #: #Ventas, #Inventario.',
+      );
+      expect(diagrams.saveAst).not.toHaveBeenCalled();
+      expect(collaborationGateway.broadcastAiMutation).not.toHaveBeenCalled();
+    });
+
+    it('solo el administrador puede reiniciar el canal del equipo', async () => {
+      await expect(
+        service.startConversation('proj-1', 'team', ana),
+      ).rejects.toThrow(ForbiddenException);
+
+      access.assertProjectAccess.mockResolvedValueOnce('OWNER');
+      await expect(
+        service.startConversation('proj-1', 'team', ana),
+      ).resolves.toMatchObject({ channel: 'team' });
     });
   });
 

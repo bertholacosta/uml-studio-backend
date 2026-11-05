@@ -7,7 +7,9 @@ const MINUTE = 60_000;
 export const DEFAULT_LIMIT = { ttl: MINUTE, limit: 300 };
 /** Login y registro: frena los intentos de adivinar contraseñas. */
 export const AUTH_LIMIT = { ttl: MINUTE, limit: 10 };
-/** Asistente Trazo: cada llamada consume cuota del proveedor de IA. */
+/** Chat del equipo: mensajes entre personas y menciones a Trazo. */
+export const CHAT_LIMIT = { ttl: MINUTE, limit: 60 };
+/** Imágenes para Trazo: cada una ocupa el servidor de IA. */
 export const AI_LIMIT = { ttl: MINUTE, limit: 20 };
 
 /**

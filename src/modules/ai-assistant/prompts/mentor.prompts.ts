@@ -1,5 +1,6 @@
 import { UmlClassNode, UmlConnection } from '../domain/uml-diagram.types';
 import { describeDiagram } from './uml.prompts';
+import { TargetReason, diagramTag } from '../domain/diagram-target';
 
 /**
  * Trazo en la pizarra compartida: desarrollador senior y mentor que conversa con todo el
@@ -7,7 +8,13 @@ import { describeDiagram } from './uml.prompts';
  * operaciones que aplica el sistema.
  */
 export const MENTOR_INSTRUCTION = `
-Eres Trazo, desarrollador senior y mentor de modelado UML 2.5 integrado en una pizarra colaborativa de UML Studio. Varias personas diseñan juntas un diagrama de clases que después se convierte en un backend Spring Boot (JPA + PostgreSQL). Todas ven cada mensaje que te escriben y cada respuesta tuya.
+Eres Trazo, desarrollador senior y mentor de modelado UML 2.5, y un miembro más del equipo de un proyecto de UML Studio. El equipo diseña diagramas de clases (lienzos) que después se convierten en un backend Spring Boot (JPA + PostgreSQL).
+
+DÓNDE ESTÁS:
+- En el CANAL DEL EQUIPO (como Slack): las personas también hablan entre ellas. Esos mensajes son contexto; tú respondes solo al último, el que te menciona con @Trazo. Todos ven tu respuesta.
+- O en una CONVERSACIÓN PRIVADA con una persona: nadie más la ve.
+- NUNCA actúes por tu cuenta: haz solo lo que pide el mensaje que te llama. No edites ni propongas nada que nadie haya pedido.
+- Los cambios se hacen sobre el LIENZO indicado. Si no hay lienzo elegido y la petición exige cambios, usa "clarify" y pregunta en qué diagrama, citándolos con # (ej.: #Ventas).
 
 CÓMO CONVERSAS:
 - Cada mensaje llega con el nombre de quien lo escribe. Responde SIEMPRE a esa persona y llámala por su nombre de pila (ej.: "Ana, ...").
@@ -16,6 +23,7 @@ CÓMO CONVERSAS:
 - Si dos personas piden cosas contradictorias, señala el conflicto y propón una solución en vez de elegir en silencio.
 - Español claro y directo. Respuestas cortas (unas 120 palabras) salvo que pidan una explicación detallada. Sin saludos de relleno.
 - Habla solo de lo que ves en el DIAGRAMA ACTUAL; no inventes clases ni atributos que no existan.
+- En una lluvia de ideas ("¿qué podríamos construir aquí?"), da ideas concretas y deja sus operaciones como "propose" para que el equipo las vea y las aplique en la pizarra.
 
 QUÉ HACES CON CADA MENSAJE ("intent"):
 - "answer": preguntas conceptuales, dudas o comentarios. "operations": [].
@@ -194,45 +202,86 @@ export const MENTOR_RESPONSE_SCHEMA = {
 
 export interface MentorParticipant {
   userName: string;
-  canEdit: boolean;
+  /** Sin valor: sigue solo el chat (sin un diagrama abierto). */
+  canEdit?: boolean;
+  /** Diagrama que tiene abierto, si lo hay. */
+  diagramName?: string;
 }
 
 export interface MentorTurnContext {
   speaker: string;
   canEdit: boolean;
   prompt: string;
+  channel: 'team' | 'direct';
   projectName?: string;
-  diagramName?: string;
+  /** Diagramas del proyecto, para que Trazo pueda nombrarlos o preguntar en cuál trabajar. */
+  diagrams: { name: string; classCount: number }[];
+  /** Lienzo sobre el que trabaja este mensaje, y por qué se eligió. */
+  target?: { name: string; reason: TargetReason };
   participants: MentorParticipant[];
   nodes: UmlClassNode[];
   connections: UmlConnection[];
 }
 
+const TARGET_REASONS: Record<TargetReason, string> = {
+  tag: 'lo indicó con #',
+  open: 'es el diagrama que tiene abierto',
+  classes: 'es el único diagrama con las clases que menciona',
+  thread: 'es el diagrama del que se venía hablando',
+  only: 'es el único diagrama del proyecto',
+};
+
 /** Instrucción de sistema con el resumen de la conversación anterior, si existe. */
 export function buildMentorInstruction(summary: string): string {
   return summary
-    ? `${MENTOR_INSTRUCTION}\nRESUMEN DE LA CONVERSACIÓN ANTERIOR DEL EQUIPO:\n${summary}\n`
+    ? `${MENTOR_INSTRUCTION}
+RESUMEN DE LA CONVERSACIÓN ANTERIOR DEL EQUIPO:
+${summary}
+`
     : MENTOR_INSTRUCTION;
 }
 
-/** Mensaje actual: proyecto, quién está conectado, el diagrama y lo que dice la persona. */
+/** Mensaje actual: proyecto, canal, quién está conectado, el lienzo y lo que dice la persona. */
 export function buildMentorPrompt(ctx: MentorTurnContext): string {
   const people = ctx.participants.length
     ? ctx.participants
-        .map((p) => `${p.userName} (${p.canEdit ? 'editor' : 'solo lectura'})`)
+        .map((p) => {
+          const role =
+            p.canEdit === undefined
+              ? 'solo el chat'
+              : p.canEdit
+                ? 'editor'
+                : 'solo lectura';
+          return `${p.userName} (${role}${p.diagramName ? `, en ${diagramTag(p.diagramName)}` : ''})`;
+        })
         .join(', ')
     : ctx.speaker;
-  const project = [
-    ctx.projectName && `PROYECTO: ${ctx.projectName}`,
-    ctx.diagramName && `DIAGRAMA: ${ctx.diagramName}`,
-  ]
-    .filter(Boolean)
-    .join('\n');
+  const diagrams = ctx.diagrams.length
+    ? ctx.diagrams
+        .map((d) => `${diagramTag(d.name)} (${d.classCount} clases)`)
+        .join(', ')
+    : '(ninguno)';
+  const channel =
+    ctx.channel === 'team'
+      ? 'canal del equipo: todos ven tu respuesta'
+      : `conversación privada con ${ctx.speaker}: nadie más la ve`;
+  const canvas = ctx.target
+    ? `LIENZO: ${diagramTag(ctx.target.name)} (${TARGET_REASONS[ctx.target.reason]})
 
-  return `${project ? `${project}\n` : ''}EN LA PIZARRA AHORA: ${people}
+DIAGRAMA ACTUAL (${diagramTag(ctx.target.name)}):
+${describeDiagram(ctx.nodes, ctx.connections)}`
+    : 'LIENZO: ninguno elegido. Si piden cambios, pregunta en qué diagrama.';
 
-DIAGRAMA ACTUAL:
-${describeDiagram(ctx.nodes, ctx.connections)}
+  return `${
+    ctx.projectName
+      ? `PROYECTO: ${ctx.projectName}
+`
+      : ''
+  }DIAGRAMAS DEL PROYECTO: ${diagrams}
+CONECTADOS AHORA: ${people}
+DÓNDE: ${channel}
+
+${canvas}
 
 MENSAJE DE ${ctx.speaker} (${ctx.canEdit ? 'puede editar' : 'solo lectura: no puede editar'}):
 "${ctx.prompt}"`;

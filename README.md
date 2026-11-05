@@ -11,13 +11,15 @@ El cliente web está en el repositorio del frontend (`sw1_parcial1_frontend`).
 - **Proyectos con roles** (`OWNER`, `EDITOR`, `VIEWER`): invitar por correo, cambiar el rol o quitar miembros. El acceso se comprueba en un único servicio (`ProjectAccessService`).
 - **Diagramas de clases** guardados como clases, atributos, métodos y relaciones (asociación, agregación, composición, herencia, dependencia, realización y clase de asociación) con sus multiplicidades.
 - **Colaboración en tiempo real** con Socket.IO: una sala por diagrama con presencia, cursores, arrastre en vivo, bloqueo de clases mientras alguien las edita y sincronización de cambios. El estado de la sala vive en memoria.
-- **Trazo, mentor del equipo en la pizarra** (ver [Trazo e IA local](#trazo-e-ia-local)):
-  - Actúa como desarrollador senior: explica conceptos (atributo derivado, composición, multiplicidades…) con ejemplos del propio diagrama, revisa el modelo y propone mejoras.
-  - **Conversación compartida**: la pregunta de cualquier colaborador y la respuesta de Trazo llegan en tiempo real a todos los que tienen abierto el diagrama, en cualquier navegador.
-  - **Distingue quién le habla**: cada mensaje lleva el nombre de su autor, Trazo se dirige a esa persona por su nombre y conoce quién está conectado y con qué permiso.
-  - Según el mensaje, **responde**, **edita** el diagrama (operaciones `add_class`, `update_class`, `add_relation`…) o deja una **propuesta** que cualquier editor aplica con un botón. A los lectores siempre les propone, nunca edita.
-  - Toda la interacción y el contexto se guardan en **MongoDB**; los mensajes antiguos se resumen solos para no perder el hilo.
-  - Atiende las peticiones de un mismo diagrama en orden y trabaja sobre el diagrama más reciente de la sala.
+- **Chat del equipo con Trazo** (ver [Trazo e IA local](#trazo-e-ia-local)):
+  - **Canal del equipo por proyecto**, como un canal de Slack: las personas conversan entre ellas en tiempo real y **Trazo es un miembro más** que solo responde cuando lo mencionan con **@Trazo** (nunca actúa por su cuenta). Las menciones **@persona** se resaltan.
+  - **Conversación privada** de cada persona con Trazo: nadie más la ve.
+  - **Elige el lienzo**: con **#Diagrama** se indica en qué diagrama trabajar; si no, Trazo usa el que tiene abierto quien escribe, el único que contiene las clases mencionadas o el del hilo, y si no puede saberlo pregunta.
+  - Actúa como desarrollador senior: explica conceptos con ejemplos del propio diagrama, revisa el modelo, propone ideas o **edita** el diagrama (operaciones `add_class`, `update_class`, `add_relation`…). A los lectores siempre les propone; cualquier editor aplica la propuesta con un botón.
+  - **Distingue quién le habla**: cada mensaje lleva el nombre de su autor, Trazo se dirige a esa persona por su nombre y sabe quién está conectado, con qué permiso y en qué diagrama.
+  - **Guarda en el servidor** los cambios que hace, aunque nadie tenga ese diagrama abierto, y los difunde a quien sí lo tiene.
+  - Toda la interacción y el contexto se guardan en **MongoDB**, así que la sesión continúa al día siguiente; los mensajes antiguos se resumen solos.
+  - El **administrador** del proyecto (rol `OWNER`) es quien puede reiniciar el canal del equipo.
   - Digitaliza un diagrama a partir de una foto o captura y crea automáticamente la tabla intermedia de las relaciones muchos a muchos.
 - **XMI 2.1** compatible con Enterprise Architect: exportación e importación (la importación asigna ids nuevos y es atómica).
 - **Generación de código** con vista previa o descarga en `.zip`:
@@ -178,11 +180,12 @@ Todas las rutas llevan el prefijo `/api` y, salvo registro, login y estado, requ
 | `GET` | `/diagrams/project/:projectId` | Diagramas de un proyecto |
 | `GET`, `PATCH`, `DELETE` | `/diagrams/:id` | Ver, renombrar o borrar un diagrama |
 | `PUT` | `/diagrams/:id/ast` | Guardar el contenido del diagrama |
-| `GET` | `/ai/diagrams/:diagramId/conversation` | Conversación compartida con Trazo (últimos mensajes) |
-| `POST` | `/ai/diagrams/:diagramId/conversation` | Empezar una conversación nueva para toda la pizarra |
-| `POST` | `/ai/prompt` | Pregunta o instrucción a Trazo (`202`: la respuesta llega por Socket.IO) |
-| `POST` | `/ai/messages/:messageId/apply` | Aplicar una propuesta de Trazo |
-| `POST` | `/ai/vision-diagram` | Digitalizar un diagrama desde una imagen (`202`, igual que `/ai/prompt`) |
+| `GET` | `/chat/projects/:projectId/team` | Canal del equipo del proyecto (últimos mensajes) |
+| `GET` | `/chat/projects/:projectId/direct` | Conversación privada con Trazo |
+| `POST` | `/chat/projects/:projectId/messages` | Mensaje al canal (`team`) o privado (`direct`); con @Trazo (o en privado) responde Trazo (`202`: su respuesta llega por Socket.IO) |
+| `POST` | `/chat/projects/:projectId/:channel/reset` | Nueva conversación (el canal del equipo, solo el administrador) |
+| `POST` | `/chat/messages/:messageId/apply` | Aplicar una propuesta de Trazo |
+| `POST` | `/ai/vision-diagram` | Digitalizar un diagrama desde una imagen (`202`) |
 | `POST` | `/codegen/preview/:diagramId` | Vista previa del código generado |
 | `POST` | `/codegen/download/:diagramId` | Descargar el código generado en `.zip` |
 | `GET` | `/xmi/export/:diagramId` | Exportar a XMI |
@@ -200,9 +203,10 @@ Socket.IO en el espacio de nombres `/collaboration`, autenticado con el mismo JW
 | `node_drag` | Movimiento de una clase en vivo |
 | `lock_node` / `unlock_node` | Bloquear una clase mientras se edita |
 | `diagram_sync` | Difundir los cambios del diagrama |
-| `ai_message` | (servidor → sala) Mensaje nuevo o actualizado de la conversación con Trazo |
-| `ai_status` | (servidor → sala) Trazo está respondiendo a alguien (`busy`, `userName`) o ha terminado |
-| `ai_conversation_reset` | (servidor → sala) Alguien empezó una conversación nueva |
+| `join_project` | Seguir el chat del proyecto sin abrir un diagrama (app móvil); `join_room` también une al chat del proyecto |
+| `chat_message` | (servidor → proyecto o persona) Mensaje nuevo o actualizado del canal del equipo o de la conversación privada |
+| `trazo_status` | (servidor → proyecto o persona) Trazo está respondiendo a alguien (`busy`, `userName`) o ha terminado |
+| `chat_reset` | (servidor → proyecto o persona) Empezó una conversación nueva |
 
 ## Trazo e IA local
 
@@ -242,23 +246,30 @@ aws ssm put-parameter --name /uml-studio/MODAL_SECRET --type SecureString --valu
 
 y se vuelve a desplegar el backend (*Actions → Deploy → Run workflow*) para que lea los parámetros.
 
-Tras unos minutos sin uso, la primera respuesta tarda más (hasta ~1 minuto) mientras Modal enciende la GPU y carga el modelo. Por eso Trazo responde de forma **asíncrona**: `POST /ai/prompt` devuelve `202` con el mensaje guardado y la respuesta llega a toda la pizarra por Socket.IO (`ai_message` y, si hay cambios, `diagram_synced`); el chat avisa de que el servidor del modelo se está encendiendo.
+Tras unos minutos sin uso, la primera respuesta tarda más (hasta ~1 minuto) mientras Modal enciende la GPU y carga el modelo. Por eso Trazo responde de forma **asíncrona**: `POST /chat/projects/:id/messages` devuelve `202` con el mensaje guardado y la respuesta llega por Socket.IO (`chat_message` y, si hay cambios, `diagram_synced` en el lienzo); el chat avisa de que el servidor del modelo se está encendiendo.
 
-### Cómo conoce Trazo el contexto
+### El orquestador: cómo conoce Trazo el contexto
 
-El modelo no guarda nada entre peticiones: en cada pregunta el backend le envía todo lo que necesita.
+Nadie habla directamente con el modelo. Entre el equipo y la única instancia de IA está el **orquestador** (`AiAssistantService`): recibe todos los mensajes del chat, los guarda y los difunde, y solo cuando alguien menciona a Trazo (o le escribe en privado) decide el lienzo, arma el contexto, llama al modelo, aplica y guarda los cambios y responde. Las peticiones de un proyecto se atienden de una en una para que cada respuesta vea las anteriores. El modelo no guarda nada entre peticiones: en cada una recibe todo lo que necesita.
 
 ```text
-Navegador ──► API (AWS) ──► arma el contexto ──────────────────────────► Ollama «trazo» (Modal)
-                 │   · instrucción de mentor y formato de respuesta              │
-                 │   · resumen de la conversación (MongoDB)                      │
-                 │   · últimos 12 mensajes, cada uno con el nombre de su autor   │
-                 │   · proyecto y diagrama (PostgreSQL)                          │
-                 │   · quién está conectado y con qué permiso (Socket.IO)        │
-                 │   · diagrama actual en texto compacto                         │
-                 │   · mensaje nuevo y quién lo escribe                          │
-                 ◄──────────────────────── JSON: respuesta + operaciones ────────┘
-                 └─► guarda la respuesta en MongoDB, aplica los cambios y la difunde a la sala
+Ana: «@Trazo agrega Lote en #Inventario»
+   │
+   ▼
+Orquestador (API en AWS)
+   1. guarda y difunde el mensaje (MongoDB + Socket.IO)
+   2. ¿menciona a Trazo? si no, termina aquí
+   3. elige el lienzo: #Inventario › diagrama abierto › clases mencionadas › hilo › único diagrama
+   4. arma el contexto ─────────────────────────────────────────────► Ollama «trazo» (Modal)
+        · instrucción de mentor y formato de respuesta                         │
+        · resumen de la conversación (MongoDB)                                 │
+        · últimos 12 mensajes, cada uno con el nombre de su autor              │
+        · proyecto, sus diagramas y quién está conectado y dónde               │
+        · el lienzo elegido en texto compacto (PostgreSQL o la sala)           │
+        · el mensaje y quién lo escribe (y si puede editar)                    │
+   5. ◄────────────────────────────── JSON: respuesta + operaciones ──────────┘
+   6. aplica las operaciones, guarda el diagrama (PostgreSQL) y lo difunde al lienzo
+   7. guarda la respuesta (MongoDB) y la envía al canal: «Ana, listo: agregué Lote en #Inventario»
 ```
 
 ### Qué se guarda en MongoDB
@@ -267,8 +278,8 @@ Base `uml_studio_ai`:
 
 | Colección | Contenido |
 | --- | --- |
-| `ai_conversations` | Una conversación activa por diagrama (las anteriores quedan como historial): quién la empezó, número de mensajes y el **resumen** de los mensajes antiguos |
-| `ai_messages` | Cada pregunta y respuesta: autor (id y nombre), texto, intención (`answer`, `edit`, `propose`, `clarify`, `vision`), operaciones propuestas o aplicadas, estado de la propuesta y quién la aplicó, modelo, latencia y tokens |
+| `chat_conversations` | El canal del equipo de cada proyecto y la conversación privada de cada persona con Trazo (las anteriores quedan como historial): quién la empezó, número de mensajes y el **resumen** de los mensajes antiguos |
+| `chat_messages` | Cada mensaje: autor (id y nombre), texto, menciones, diagrama en el que actuó Trazo, intención (`answer`, `edit`, `propose`, `clarify`, `vision`), operaciones propuestas o aplicadas, estado de la propuesta y quién la aplicó, modelo, latencia y tokens |
 
 Cada petición envía al modelo: la instrucción de mentor, el resumen de la conversación, los últimos 12 mensajes (cada uno con el nombre de su autor), quién está conectado y con qué permiso, el diagrama actual en texto compacto y el mensaje nuevo. Cuando se acumulan más de 24 mensajes sin resumir, los más antiguos se resumen en segundo plano.
 
