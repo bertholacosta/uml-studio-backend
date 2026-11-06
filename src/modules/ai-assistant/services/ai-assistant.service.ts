@@ -230,7 +230,8 @@ export class AiAssistantService {
       user.id,
       'read',
     );
-    const canEdit = role !== ProjectRole.VIEWER;
+    // Desde la app móvil nunca se edita: Trazo responde o deja una propuesta
+    const canEdit = role !== ProjectRole.VIEWER && !dto.readOnly;
     const receivedAt = Date.now();
     const text = dto.text.trim();
     const callsTrazo =
@@ -846,6 +847,10 @@ export class AiAssistantService {
     connections: UmlConnection[],
     user: ChatUser,
   ): Promise<void> {
+    const actor = {
+      userId: AI_USER_ID,
+      userName: `${AI_USER_NAME} (a pedido de ${firstName(user.fullName)})`,
+    };
     await this.diagrams.saveAst(
       diagramId,
       {
@@ -875,6 +880,7 @@ export class AiAssistantService {
         })),
       } as any,
       user.id,
+      actor,
     );
   }
 

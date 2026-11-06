@@ -4,6 +4,7 @@ import { DataSource } from 'typeorm';
 import { DiagramService } from './diagram.service';
 import { DiagramRepository } from '../repositories/diagram.repository';
 import { ProjectAccessService } from '../../projects/services/project-access.service';
+import { CollaborationGateway } from '../../projects/gateways/collaboration.gateway';
 import { ProjectRole } from '../../projects/entities/project-role.enum';
 import { Diagram } from '../entities/diagram.entity';
 import { UmlNode } from '../entities/uml-node.entity';
@@ -21,8 +22,11 @@ describe('DiagramService', () => {
   let access: {
     assertDiagramAccess: jest.Mock;
     assertProjectAccess: jest.Mock;
+    getUserName: jest.Mock;
+    listProjectDiagrams: jest.Mock;
   };
   let manager: { delete: jest.Mock; insert: jest.Mock; update: jest.Mock };
+  let gateway: { emitToProject: jest.Mock };
   let dataSource: { transaction: jest.Mock };
 
   const mockUserId = '11111111-1111-1111-1111-111111111111';
@@ -81,7 +85,10 @@ describe('DiagramService', () => {
     access = {
       assertDiagramAccess: jest.fn().mockResolvedValue(ProjectRole.EDITOR),
       assertProjectAccess: jest.fn().mockResolvedValue(ProjectRole.EDITOR),
+      getUserName: jest.fn().mockResolvedValue('Ana Pérez'),
+      listProjectDiagrams: jest.fn().mockResolvedValue([]),
     };
+    gateway = { emitToProject: jest.fn() };
     manager = {
       delete: jest.fn().mockResolvedValue(undefined),
       insert: jest.fn().mockResolvedValue(undefined),
@@ -97,6 +104,7 @@ describe('DiagramService', () => {
         { provide: DiagramRepository, useValue: diagramRepo },
         { provide: ProjectAccessService, useValue: access },
         { provide: DataSource, useValue: dataSource },
+        { provide: CollaborationGateway, useValue: gateway },
       ],
     }).compile();
 
@@ -149,6 +157,25 @@ describe('DiagramService', () => {
     });
   });
 
+  describe('findAllByProjectId', () => {
+    it('lista los diagramas con los nombres de sus clases, sin su contenido', async () => {
+      diagramRepo.findAllByProjectId.mockResolvedValue([mockDiagram]);
+      access.listProjectDiagrams.mockResolvedValue([
+        {
+          id: mockDiagramId,
+          name: 'Ventas',
+          classNames: ['Cliente', 'Pedido'],
+        },
+      ]);
+
+      const [diagram] = await service.findAllByProjectId(
+        mockProjectId,
+        mockUserId,
+      );
+      expect(diagram.classNames).toEqual(['Cliente', 'Pedido']);
+    });
+  });
+
   describe('saveAst', () => {
     it('reemplaza el AST con una inserción en bloque por tabla', async () => {
       await service.saveAst(
@@ -197,6 +224,16 @@ describe('DiagramService', () => {
       expect(manager.delete).toHaveBeenCalledWith(UmlNode, {
         diagramId: mockDiagramId,
       });
+      // El resto del proyecto (p. ej. la app móvil) se entera del cambio
+      expect(gateway.emitToProject).toHaveBeenCalledWith(
+        mockProjectId,
+        'diagram_activity',
+        expect.objectContaining({
+          diagramId: mockDiagramId,
+          userId: mockUserId,
+          userName: 'Ana Pérez',
+        }),
+      );
       const inserted = (entity: unknown) =>
         manager.insert.mock.calls.find(([e]) => e === entity)?.[1];
       expect(inserted(UmlNode)).toHaveLength(2);

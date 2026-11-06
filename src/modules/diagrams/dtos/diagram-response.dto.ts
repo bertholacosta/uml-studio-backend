@@ -21,6 +21,14 @@ export class DiagramResponseDto {
   @ApiProperty({ type: [UmlConnectionDto] })
   connections: UmlConnectionDto[];
 
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['Cliente', 'Pedido'],
+    description:
+      'En el listado de un proyecto: nombres de sus clases (nodes y connections van vacíos)',
+  })
+  classNames?: string[];
+
   @ApiProperty({ example: '2026-08-28T14:00:00.000Z' })
   updatedAt: Date;
 

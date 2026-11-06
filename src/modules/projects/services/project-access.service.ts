@@ -117,6 +117,15 @@ export class ProjectAccessService {
     }));
   }
 
+  /** Nombre completo de una persona. */
+  async getUserName(userId: string): Promise<string | undefined> {
+    const [row] = await this.dataSource.query<{ full_name: string }[]>(
+      'SELECT full_name FROM users WHERE id = $1',
+      [userId],
+    );
+    return row?.full_name;
+  }
+
   /** Nombre del proyecto. */
   async getProjectName(projectId: string): Promise<string | undefined> {
     const [row] = await this.dataSource.query<{ name: string }[]>(

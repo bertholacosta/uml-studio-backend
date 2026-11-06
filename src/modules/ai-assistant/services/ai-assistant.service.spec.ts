@@ -1025,6 +1025,7 @@ describe('AiAssistantService', () => {
         'diag-123',
         expect.objectContaining({ nodes: expect.any(Array) }),
         'user-2',
+        { userId: 'ai_assistant', userName: 'Trazo (a pedido de Luis)' },
       );
       expect(collaborationGateway.broadcastAiMutation).toHaveBeenCalled();
       expect(collaborationGateway.emitToProject).toHaveBeenCalledWith(
@@ -1276,6 +1277,8 @@ describe('AiAssistantService', () => {
           ]),
         }),
         'user-1',
+        // El aviso al proyecto dice que lo cambió Trazo a pedido de Ana
+        { userId: 'ai_assistant', userName: 'Trazo (a pedido de Ana)' },
       );
       expect(collaborationGateway.broadcastAiMutation).toHaveBeenCalledWith(
         'diag-456',

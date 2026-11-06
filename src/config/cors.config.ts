@@ -2,7 +2,12 @@
  * Configuración centralizada de CORS para API REST y WebSockets
  */
 
-const DEV_ORIGINS = ['http://localhost:4200', 'http://127.0.0.1:4200'];
+// Servidores de desarrollo: Angular (4200) y la app móvil ejecutada como web (5050)
+const DEV_ORIGINS = [
+  'http://localhost:4200',
+  'http://127.0.0.1:4200',
+  'http://localhost:5050',
+];
 
 let cachedOrigins: string[] | null = null;
 
@@ -14,7 +19,7 @@ export function getAllowedCorsOrigins(): string[] {
     .map((origin) => origin.trim().replace(/\/$/, ''))
     .filter(Boolean);
 
-  // El servidor de desarrollo de Angular solo se admite fuera de producción
+  // Los servidores de desarrollo solo se admiten fuera de producción
   const defaults = process.env.NODE_ENV === 'production' ? [] : DEV_ORIGINS;
   cachedOrigins = Array.from(new Set([...envOrigins, ...defaults]));
   return cachedOrigins;

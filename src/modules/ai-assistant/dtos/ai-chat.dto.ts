@@ -3,6 +3,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsIn,
   IsInt,
   IsNotEmpty,
@@ -218,6 +219,14 @@ export class SendChatMessageDto extends OpenDiagramDto {
   @IsString()
   @MaxLength(64)
   clientId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Modo solo lectura (app móvil): Trazo responde o propone, pero nunca edita el diagrama',
+  })
+  @IsOptional()
+  @IsBoolean()
+  readOnly?: boolean;
 }
 
 /** Diagrama actual sobre el que se aplica una propuesta de Trazo. */

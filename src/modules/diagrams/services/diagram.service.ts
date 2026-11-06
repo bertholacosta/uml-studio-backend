@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { DiagramRepository } from '../repositories/diagram.repository';
 import { ProjectAccessService } from '../../projects/services/project-access.service';
+import { CollaborationGateway } from '../../projects/gateways/collaboration.gateway';
 import { Diagram } from '../entities/diagram.entity';
 import { UmlNode } from '../entities/uml-node.entity';
 import { UmlAttribute } from '../entities/uml-attribute.entity';
@@ -12,12 +13,19 @@ import { UpdateDiagramDto } from '../dtos/update-diagram.dto';
 import { SaveDiagramAstDto } from '../dtos/save-diagram-ast.dto';
 import { DiagramResponseDto } from '../dtos/diagram-response.dto';
 
+/** Quién cambió un diagrama, para el aviso al resto del proyecto. */
+export interface DiagramActor {
+  userId: string;
+  userName: string;
+}
+
 @Injectable()
 export class DiagramService {
   constructor(
     private readonly diagramRepository: DiagramRepository,
     private readonly access: ProjectAccessService,
     private readonly dataSource: DataSource,
+    private readonly collaborationGateway: CollaborationGateway,
   ) {}
 
   async create(
@@ -45,8 +53,16 @@ export class DiagramService {
     userId: string,
   ): Promise<DiagramResponseDto[]> {
     await this.access.assertProjectAccess(projectId, userId, 'read');
-    const diagrams = await this.diagramRepository.findAllByProjectId(projectId);
-    return diagrams.map((d) => DiagramResponseDto.fromEntity(d));
+    const [diagrams, summaries] = await Promise.all([
+      this.diagramRepository.findAllByProjectId(projectId),
+      this.access.listProjectDiagrams(projectId),
+    ]);
+    // El listado no carga el contenido, solo los nombres de las clases (una consulta)
+    const classNames = new Map(summaries.map((s) => [s.id, s.classNames]));
+    return diagrams.map((d) => ({
+      ...DiagramResponseDto.fromEntity(d),
+      classNames: classNames.get(d.id) || [],
+    }));
   }
 
   async findOne(id: string, userId: string): Promise<DiagramResponseDto> {
@@ -76,6 +92,7 @@ export class DiagramService {
     id: string,
     astDto: SaveDiagramAstDto,
     userId: string,
+    actor?: DiagramActor,
   ): Promise<DiagramResponseDto> {
     await this.access.assertDiagramAccess(id, userId, 'write');
 
@@ -137,7 +154,38 @@ export class DiagramService {
       await manager.update(Diagram, id, { updatedAt: new Date() });
     });
 
-    return DiagramResponseDto.fromEntity(await this.loadFull(id));
+    const saved = DiagramResponseDto.fromEntity(await this.loadFull(id));
+    await this.announce(saved, userId, actor);
+    return saved;
+  }
+
+  /**
+   * Avisa al canal del proyecto de que un diagrama cambió (evento diagram_activity): la app
+   * móvil refresca la lista y lo notifica a quien no está mirando ese diagrama.
+   */
+  private async announce(
+    diagram: DiagramResponseDto,
+    userId: string,
+    actor?: DiagramActor,
+  ): Promise<void> {
+    if (!diagram.projectId) return;
+    const who = actor || {
+      userId,
+      userName: (await this.access.getUserName(userId)) || 'Alguien',
+    };
+    this.collaborationGateway.emitToProject(
+      diagram.projectId,
+      'diagram_activity',
+      {
+        projectId: diagram.projectId,
+        diagramId: diagram.id,
+        diagramName: diagram.name,
+        userId: who.userId,
+        userName: who.userName,
+        classCount: diagram.nodes.filter((n) => !n.isAnchor).length,
+        at: new Date().toISOString(),
+      },
+    );
   }
 
   async remove(
