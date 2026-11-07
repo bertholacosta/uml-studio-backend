@@ -1,3 +1,4 @@
+import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayMaxSize,
@@ -32,6 +33,8 @@ export class AiDiagramContextDto {
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_NODES)
+  // Sin tipo, la conversión implícita de la validación convierte cada elemento en un Array
+  @Type(() => Object)
   currentNodes?: any[];
 
   @ApiPropertyOptional({
@@ -41,6 +44,8 @@ export class AiDiagramContextDto {
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_CONNECTIONS)
+  // Sin tipo, la conversión implícita de la validación convierte cada elemento en un Array
+  @Type(() => Object)
   currentConnections?: any[];
 
   @ApiPropertyOptional({

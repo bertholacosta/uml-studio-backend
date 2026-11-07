@@ -22,6 +22,7 @@ import {
   ChatMessageDto,
   ConversationDto,
   OpenDiagramDto,
+  ReviewChangeDto,
   SendChatMessageDto,
 } from '../dtos/ai-chat.dto';
 import {
@@ -66,6 +67,7 @@ import { resolveManyToManyRelationships } from '../domain/many-to-many.resolver'
 import { reviewFindings } from '../domain/model-review';
 import { operationSteps } from '../domain/operation-steps';
 import { readStreamDraft } from '../domain/stream-draft';
+import { revertChange } from '../domain/revert-change';
 import { TrazoSettingsService } from '../settings/trazo-settings.service';
 import {
   CREATIVITY_TEMPERATURE,
@@ -96,6 +98,7 @@ import {
 import {
   AiConversationDocument,
   AiMessageDocument,
+  CanvasSnapshot,
   ChatAuthor,
   ChatChannel,
   ChatIntent,
@@ -486,6 +489,11 @@ export class AiAssistantService {
         intent: 'edit',
         changesSummary: 'Limpieza total del diagrama.',
         operations: [{ op: 'clear_diagram' }],
+        review: await this.reviewFor(
+          diagramId,
+          { nodes: currentNodes, connections: currentConnections },
+          { nodes: [], connections: [] },
+        ),
       });
       return {
         success: true,
@@ -661,6 +669,12 @@ export class AiAssistantService {
           intent: 'edit',
           changesSummary,
           operations: operations as any[],
+          // Queda resaltado en el lienzo hasta que alguien lo acepte o lo deshaga
+          review: await this.reviewFor(
+            target.diagram.id,
+            { nodes: currentNodes, connections: currentConnections },
+            { nodes, connections },
+          ),
           ...modelInfo,
         });
         return {
@@ -932,7 +946,16 @@ export class AiAssistantService {
           nodes,
           connections,
         );
-        const dtoMessage = this.conversations.toDto(applied);
+        const review = await this.reviewFor(diagramId, current, {
+          nodes,
+          connections,
+        });
+        const reviewed = await this.conversations.startReview(
+          messageId,
+          review.before,
+          review.after,
+        );
+        const dtoMessage = this.conversations.toDto(reviewed ?? applied);
         this.emit(conversation, 'chat_message', dtoMessage);
         return {
           success: true,
@@ -948,6 +971,161 @@ export class AiAssistantService {
         throw err;
       }
     });
+  }
+
+  // --- Revisión de los cambios de Trazo ---
+
+  /**
+   * Deja un cambio de Trazo a revisión: se resalta en el lienzo hasta que alguien lo acepte o
+   * lo deshaga. Los cambios anteriores aún pendientes en el mismo diagrama se dan por aceptados.
+   */
+  private async reviewFor(
+    diagramId: string,
+    before: { nodes: UmlClassNode[]; connections: UmlConnection[] },
+    after: { nodes: UmlClassNode[]; connections: UmlConnection[] },
+  ) {
+    for (const previous of await this.conversations.pendingReviewsOn(
+      diagramId,
+    )) {
+      const accepted = await this.conversations.decideReview(
+        previous.id,
+        'accepted',
+      );
+      if (accepted) await this.emitUpdated(accepted);
+    }
+    // Copia en JSON plano: los nodos que vienen de la base de datos son instancias de clase y
+    // MongoDB (campo Mixed) no los guarda bien tal cual
+    const plain = (state: typeof before) =>
+      JSON.parse(JSON.stringify(state)) as CanvasSnapshot;
+    return {
+      state: 'pending' as const,
+      before: plain(before),
+      after: plain(after),
+    };
+  }
+
+  /** Reenvía un mensaje que cambió a quien lo ve (el canal o la conversación privada). */
+  private async emitUpdated(message: AiMessageDocument): Promise<void> {
+    const conversation = await this.conversations.findConversation(
+      message.conversationId,
+    );
+    if (conversation) {
+      this.emit(
+        conversation,
+        'chat_message',
+        this.conversations.toDto(message),
+      );
+    }
+  }
+
+  /**
+   * Acepta o deshace todo lo que Trazo hizo en un mensaje. Deshacer revierte solo lo que tocó
+   * Trazo, sobre el diagrama actual, sin perder lo que el equipo cambió después; Trazo lo cuenta
+   * en la conversación para que quede en el historial (y en su contexto).
+   */
+  async reviewChange(
+    messageId: string,
+    dto: ReviewChangeDto,
+    user: ChatUser,
+  ): Promise<AiResponseDto> {
+    const message = await this.conversations.findMessage(messageId);
+    if (!message?.review || !message.diagramId) {
+      throw new NotFoundException('Cambio de Trazo no encontrado');
+    }
+    await this.access.assertDiagramAccess(message.diagramId, user.id, 'write');
+    const conversation = await this.conversations.findConversation(
+      message.conversationId,
+    );
+    if (
+      !conversation ||
+      (conversation.channel === 'direct' && conversation.ownerId !== user.id)
+    ) {
+      throw new NotFoundException('Cambio de Trazo no encontrado');
+    }
+    if (message.review.state !== 'pending') {
+      throw new ConflictException('Este cambio de Trazo ya se revisó');
+    }
+    const diagramId = message.diagramId;
+    const author = this.authorOf(user);
+
+    if (dto.decision === 'accept') {
+      const accepted = await this.conversations.decideReview(
+        messageId,
+        'accepted',
+        author,
+      );
+      if (!accepted)
+        throw new ConflictException('Este cambio de Trazo ya se revisó');
+      const dtoMessage = this.conversations.toDto(accepted);
+      this.emit(conversation, 'chat_message', dtoMessage);
+      return {
+        success: true,
+        action: 'review_accepted',
+        message: `${firstName(user.fullName)} aceptó los cambios de Trazo.`,
+        nodes: [],
+        connections: [],
+        changesSummary: message.changesSummary || '',
+        assistantMessage: dtoMessage,
+      };
+    }
+
+    const current = await this.loadCanvas(diagramId, dto, Date.now(), user);
+    const before = message.review.before as unknown as {
+      nodes: UmlClassNode[];
+      connections: UmlConnection[];
+    };
+    const after = message.review.after as unknown as typeof before;
+    // Sin el antes y el después completos, deshacer podría borrar de más: mejor no hacerlo
+    const valid = (state?: typeof before) =>
+      !!state &&
+      Array.isArray(state.nodes) &&
+      Array.isArray(state.connections) &&
+      state.nodes.every((n) => typeof n?.id === 'string') &&
+      state.connections.every((c) => typeof c?.id === 'string');
+    if (!valid(before) || !valid(after)) {
+      throw new BadRequestException(
+        'Este cambio de Trazo no se puede deshacer automáticamente; acéptalo y corrígelo a mano',
+      );
+    }
+    const reverted = revertChange(current, before, after);
+    const { nodes, connections } = this.finalize(
+      reverted.nodes,
+      reverted.connections,
+    );
+    const decided = await this.conversations.decideReview(
+      messageId,
+      'reverted',
+      author,
+    );
+    if (!decided)
+      throw new ConflictException('Este cambio de Trazo ya se revisó');
+    // Lo deshace la persona (así figura en el registro de actividad), no Trazo
+    await this.saveCanvas(diagramId, nodes, connections, user, false);
+    this.collaborationGateway.broadcastAiMutation(
+      diagramId,
+      nodes,
+      connections,
+    );
+    const dtoMessage = this.conversations.toDto(decided);
+    this.emit(conversation, 'chat_message', dtoMessage);
+    await this.publish(conversation, {
+      role: 'assistant',
+      author: TRAZO,
+      intent: 'answer',
+      replyTo: message.id,
+      diagramId,
+      diagramName: message.diagramName,
+      text: `${user.fullName} deshizo los cambios que hice en ${diagramTag(message.diagramName || 'el diagrama')}${message.changesSummary ? ` (${message.changesSummary})` : ''}.`,
+    });
+    return {
+      success: true,
+      action: 'review_reverted',
+      message: `${firstName(user.fullName)} deshizo los cambios de Trazo.`,
+      nodes,
+      connections,
+      changesSummary: message.changesSummary || '',
+      assistantMessage: dtoMessage,
+    };
   }
 
   // --- Imágenes ---
@@ -1046,6 +1224,10 @@ export class AiAssistantService {
           ),
           intent: 'vision',
           changesSummary,
+          review: await this.reviewFor(dto.diagramId, current, {
+            nodes,
+            connections,
+          }),
           model: generated.model,
           latencyMs: generated.latencyMs,
           usage: generated.usage,
@@ -1250,12 +1432,16 @@ export class AiAssistantService {
     nodes: UmlClassNode[],
     connections: UmlConnection[],
     user: ChatUser,
+    /** false: lo guarda la propia persona (p. ej. al deshacer un cambio de Trazo). */
+    asTrazo = true,
   ): Promise<void> {
-    const actor = {
-      userId: AI_USER_ID,
-      userName: `${AI_USER_NAME} (a pedido de ${firstName(user.fullName)})`,
-      onBehalfOf: { userId: user.id, userName: user.fullName },
-    };
+    const actor = asTrazo
+      ? {
+          userId: AI_USER_ID,
+          userName: `${AI_USER_NAME} (a pedido de ${firstName(user.fullName)})`,
+          onBehalfOf: { userId: user.id, userName: user.fullName },
+        }
+      : { userId: user.id, userName: user.fullName };
     await this.diagrams.saveAst(
       diagramId,
       {

@@ -1,3 +1,4 @@
+import { Type } from 'class-transformer';
 import { IsString, IsOptional, IsArray, IsNumber } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -118,6 +119,8 @@ export class GenerateCodeRequestDto {
   })
   @IsOptional()
   @IsArray()
+  // Sin tipo, la conversión implícita de la validación convierte cada elemento en un Array
+  @Type(() => Object)
   nodes?: any[];
 
   @ApiPropertyOptional({
@@ -126,5 +129,7 @@ export class GenerateCodeRequestDto {
   })
   @IsOptional()
   @IsArray()
+  // Sin tipo, la conversión implícita de la validación convierte cada elemento en un Array
+  @Type(() => Object)
   connections?: any[];
 }

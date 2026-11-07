@@ -38,6 +38,33 @@ class ChatProposalDto {
   appliedAt?: Date;
 }
 
+class ChatReviewDto {
+  @ApiProperty({ enum: ['pending', 'accepted', 'reverted'] })
+  state: 'pending' | 'accepted' | 'reverted';
+
+  @ApiPropertyOptional({ type: ChatAuthorDto })
+  by?: ChatAuthorDto;
+
+  @ApiPropertyOptional()
+  at?: Date;
+
+  @ApiPropertyOptional({
+    type: 'object',
+    additionalProperties: true,
+    description:
+      'Diagrama antes del cambio de Trazo (solo mientras está pendiente)',
+  })
+  before?: { nodes: unknown[]; connections: unknown[] };
+
+  @ApiPropertyOptional({
+    type: 'object',
+    additionalProperties: true,
+    description:
+      'Diagrama después del cambio de Trazo (solo mientras está pendiente)',
+  })
+  after?: { nodes: unknown[]; connections: unknown[] };
+}
+
 /** Mensaje del canal del equipo o de una conversación privada con Trazo. */
 export class ChatMessageDto {
   @ApiProperty()
@@ -101,6 +128,13 @@ export class ChatMessageDto {
 
   @ApiPropertyOptional({ type: ChatProposalDto })
   proposal?: ChatProposalDto;
+
+  @ApiPropertyOptional({
+    type: ChatReviewDto,
+    description:
+      'Cambio de Trazo en el lienzo: resaltado mientras está pendiente; se acepta o se deshace',
+  })
+  review?: ChatReviewDto;
 
   @ApiPropertyOptional({ description: 'Miniatura de la imagen adjunta' })
   image?: string;
@@ -176,12 +210,16 @@ export class OpenDiagramDto {
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_NODES)
+  // Sin @Type, la conversión implícita de la validación convierte cada elemento en un Array
+  @Type(() => Object)
   currentNodes?: any[];
 
   @ApiPropertyOptional({ type: [Object] })
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_CONNECTIONS)
+  // Sin tipo, la conversión implícita de la validación convierte cada elemento en un Array
+  @Type(() => Object)
   currentConnections?: any[];
 }
 
@@ -231,3 +269,10 @@ export class SendChatMessageDto extends OpenDiagramDto {
 
 /** Diagrama actual sobre el que se aplica una propuesta de Trazo. */
 export class ApplyProposalDto extends OpenDiagramDto {}
+
+/** Aceptar o deshacer un cambio de Trazo; para deshacer se usa el diagrama abierto. */
+export class ReviewChangeDto extends OpenDiagramDto {
+  @ApiProperty({ enum: ['accept', 'revert'] })
+  @IsIn(['accept', 'revert'])
+  decision: 'accept' | 'revert';
+}

@@ -93,4 +93,47 @@ describe('BedrockProvider', () => {
       provider.generate({ systemInstruction: 'x', parts: [{ text: 'hola' }] }),
     ).rejects.toThrow(/AWS_BEARER_TOKEN_BEDROCK/);
   });
+
+  it('con onDelta usa ConverseStream y entrega cada trozo al llegar', async () => {
+    async function* stream() {
+      yield { messageStart: { role: 'assistant' } };
+      yield { contentBlockDelta: { delta: { text: '{"reply":"Ana, ' } } };
+      yield { contentBlockDelta: { delta: { text: 'listo"}' } } };
+      yield { metadata: { usage: { inputTokens: 900, outputTokens: 12 } } };
+    }
+    const provider = createProvider();
+    send.mockResolvedValue({ stream: stream() });
+    const deltas: string[] = [];
+
+    const result = await provider.generate({
+      systemInstruction: 'sys',
+      parts: [{ text: 'hola' }],
+      onDelta: (chunk) => deltas.push(chunk),
+    });
+
+    expect(send.mock.calls[0][0].constructor.name).toBe(
+      'ConverseStreamCommand',
+    );
+    expect(deltas).toEqual(['{"reply":"Ana, ', 'listo"}']);
+    expect(result).toMatchObject({
+      text: '{"reply":"Ana, listo"}',
+      usage: { inputTokens: 900, outputTokens: 12 },
+    });
+  });
+
+  it('un error a mitad del stream avisa de que Bedrock no está disponible', async () => {
+    async function* stream() {
+      yield { contentBlockDelta: { delta: { text: '{"re' } } };
+      yield { throttlingException: awsError('ThrottlingException') };
+    }
+    const provider = createProvider();
+    send.mockResolvedValue({ stream: stream() });
+    await expect(
+      provider.generate({
+        systemInstruction: 'sys',
+        parts: [{ text: 'hola' }],
+        onDelta: () => {},
+      }),
+    ).rejects.toThrow(AiProviderUnavailableError);
+  });
 });

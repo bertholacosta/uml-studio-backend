@@ -6,6 +6,7 @@ import {
   AiConversationDocument,
   AiMessage,
   AiMessageDocument,
+  CanvasSnapshot,
   ChatAuthor,
   ChatChannel,
 } from './ai-conversation.schema';
@@ -218,6 +219,49 @@ export class AiConversationService {
     );
   }
 
+  /** Cambio de Trazo a revisión (resaltado y a la espera de aceptarlo o deshacerlo). */
+  async startReview(
+    messageId: string,
+    before: CanvasSnapshot,
+    after: CanvasSnapshot,
+  ): Promise<AiMessageDocument | null> {
+    return this.messages.findOneAndUpdate(
+      { _id: messageId },
+      { $set: { review: { state: 'pending', before, after } } },
+      { new: true },
+    );
+  }
+
+  /** Acepta o deshace un cambio pendiente; solo la primera decisión cuenta. */
+  async decideReview(
+    messageId: string,
+    state: 'accepted' | 'reverted',
+    by?: ChatAuthor,
+  ): Promise<AiMessageDocument | null> {
+    return this.messages.findOneAndUpdate(
+      { _id: messageId, 'review.state': 'pending' },
+      {
+        $set: {
+          'review.state': state,
+          'review.at': new Date(),
+          ...(by ? { 'review.by': by } : {}),
+        },
+      },
+      { new: true },
+    );
+  }
+
+  /** Cambios de Trazo aún pendientes de revisión en un diagrama. */
+  async pendingReviewsOn(diagramId: string): Promise<AiMessageDocument[]> {
+    return this.messages.find({ diagramId, 'review.state': 'pending' }).exec();
+  }
+
+  async findConversation(
+    conversationId: string,
+  ): Promise<AiConversationDocument | null> {
+    return this.conversations.findById(conversationId).exec();
+  }
+
   async revertProposal(messageId: string): Promise<void> {
     await this.messages.updateOne(
       { _id: messageId },
@@ -275,6 +319,22 @@ export class AiConversationService {
                 }
               : undefined,
             appliedAt: message.proposal.appliedAt,
+          }
+        : undefined,
+      review: message.review
+        ? {
+            state: message.review.state,
+            by: message.review.by
+              ? {
+                  userId: message.review.by.userId,
+                  userName: message.review.by.userName,
+                }
+              : undefined,
+            at: message.review.at,
+            // El antes y el después solo hacen falta mientras se resalta
+            ...(message.review.state === 'pending'
+              ? { before: message.review.before, after: message.review.after }
+              : {}),
           }
         : undefined,
       image: message.image,

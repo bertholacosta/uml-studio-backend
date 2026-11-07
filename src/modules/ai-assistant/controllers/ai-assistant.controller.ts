@@ -30,6 +30,7 @@ import {
   ChatAcceptedDto,
   ConversationDto,
   ConversationQueryDto,
+  ReviewChangeDto,
   SendChatMessageDto,
 } from '../dtos/ai-chat.dto';
 import type { ChatChannel } from '../conversation/ai-conversation.schema';
@@ -164,6 +165,26 @@ export class AiAssistantController {
     @CurrentUser() user: User,
   ): Promise<ProposalPreviewDto> {
     return this.aiAssistantService.previewProposal(messageId, dto, user);
+  }
+
+  @Post('chat/messages/:messageId/review')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: CHAT_LIMIT })
+  @ApiOperation({
+    summary:
+      'Acepta o deshace todo lo que Trazo cambió en el lienzo en un mensaje',
+    description:
+      'decision=accept deja los cambios y quita el resaltado; decision=revert deshace solo lo que tocó Trazo, sobre el diagrama actual (sin perder lo que el equipo cambió después).',
+  })
+  @ApiResponse({ status: 200, type: AiResponseDto })
+  @ApiResponse({ status: 404, description: 'Cambio no encontrado' })
+  @ApiResponse({ status: 409, description: 'El cambio ya se revisó' })
+  async reviewChange(
+    @Param('messageId') messageId: string,
+    @Body() dto: ReviewChangeDto,
+    @CurrentUser() user: User,
+  ): Promise<AiResponseDto> {
+    return this.aiAssistantService.reviewChange(messageId, dto, user);
   }
 
   @Post('chat/messages/:messageId/apply')

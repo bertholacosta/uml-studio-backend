@@ -4,6 +4,7 @@ import {
   BedrockRuntimeClient,
   ContentBlock,
   ConverseCommand,
+  ConverseStreamCommand,
   Message,
 } from '@aws-sdk/client-bedrock-runtime';
 import {
@@ -83,35 +84,65 @@ export class BedrockProvider implements AiProvider {
     ]);
 
     const started = Date.now();
+    const input = {
+      modelId: model,
+      system: [{ text: request.systemInstruction }],
+      messages,
+      inferenceConfig: {
+        temperature: temperatureOf(request),
+        maxTokens: MAX_OUTPUT_TOKENS,
+      },
+    };
+    const options = { abortSignal: AbortSignal.timeout(this.timeoutMs) };
     try {
-      const response = await this.client.send(
-        new ConverseCommand({
-          modelId: model,
-          system: [{ text: request.systemInstruction }],
-          messages,
-          inferenceConfig: {
-            temperature: temperatureOf(request),
-            maxTokens: MAX_OUTPUT_TOKENS,
-          },
-        }),
-        { abortSignal: AbortSignal.timeout(this.timeoutMs) },
-      );
-      // Solo los bloques de texto: los modelos con razonamiento añaden bloques aparte
-      const text = (response.output?.message?.content || [])
-        .map((block) => block.text || '')
-        .join('')
-        .trim();
+      let text: string;
+      let usage: { inputTokens?: number; outputTokens?: number } | undefined;
+      if (request.onDelta) {
+        // ConverseStream: el texto llega por partes (contentBlockDelta) y el uso al final
+        const response = await this.client.send(
+          new ConverseStreamCommand(input),
+          options,
+        );
+        text = '';
+        for await (const event of response.stream ?? []) {
+          const delta = event.contentBlockDelta?.delta?.text;
+          if (delta) {
+            text += delta;
+            request.onDelta(delta);
+          }
+          if (event.metadata?.usage) usage = event.metadata.usage;
+          const failure =
+            event.internalServerException ||
+            event.modelStreamErrorException ||
+            event.throttlingException ||
+            event.serviceUnavailableException ||
+            event.validationException;
+          if (failure) throw failure;
+        }
+        text = text.trim();
+      } else {
+        const response = await this.client.send(
+          new ConverseCommand(input),
+          options,
+        );
+        // Solo los bloques de texto: los modelos con razonamiento añaden bloques aparte
+        text = (response.output?.message?.content || [])
+          .map((block) => block.text || '')
+          .join('')
+          .trim();
+        usage = response.usage;
+      }
       const latencyMs = Date.now() - started;
       this.logger.log(
-        `${model} respondió en ${latencyMs} ms (${response.usage?.inputTokens ?? '?'} → ${response.usage?.outputTokens ?? '?'} tokens)`,
+        `${model} respondió en ${latencyMs} ms (${usage?.inputTokens ?? '?'} → ${usage?.outputTokens ?? '?'} tokens)`,
       );
       return {
         text,
         model,
         latencyMs,
         usage: {
-          inputTokens: response.usage?.inputTokens,
-          outputTokens: response.usage?.outputTokens,
+          inputTokens: usage?.inputTokens,
+          outputTokens: usage?.outputTokens,
         },
       };
     } catch (error: any) {

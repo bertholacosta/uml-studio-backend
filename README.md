@@ -189,6 +189,7 @@ Todas las rutas llevan el prefijo `/api` y, salvo registro, login y estado, requ
 | `POST` | `/chat/projects/:projectId/:channel/reset` | Nueva conversación (el canal del equipo, solo el administrador) |
 | `POST` | `/chat/messages/:messageId/preview` | Vista previa de una propuesta: cómo quedaría el diagrama, sin guardarlo (también para lectores) |
 | `POST` | `/chat/messages/:messageId/apply` | Aplicar una propuesta de Trazo |
+| `POST` | `/chat/messages/:messageId/review` | Aceptar (`decision: accept`) o deshacer (`decision: revert`) todo lo que Trazo cambió en el lienzo en ese mensaje |
 | `GET` | `/projects/:id/trazo-settings` | Configuración de Trazo del proyecto, los modelos que se pueden elegir y si quien consulta puede cambiarla |
 | `PUT` | `/projects/:id/trazo-settings` | Cambiar la configuración (editores y administrador); Trazo lo anuncia en el canal del equipo |
 | `POST` | `/ai/vision-diagram` | Digitalizar un diagrama desde una imagen (`202`) |
@@ -214,7 +215,7 @@ Socket.IO en el espacio de nombres `/collaboration`, autenticado con el mismo JW
 | `trazo_status` | (servidor → proyecto o persona) Trazo está respondiendo a alguien (`busy`, `userName`) o ha terminado |
 | `chat_reset` | (servidor → proyecto o persona) Empezó una conversación nueva |
 | `trazo_settings` | (servidor → proyecto) Alguien cambió la configuración de Trazo; los paneles abiertos se actualizan |
-| `trazo_draft` | (servidor → proyecto o persona) Trazo escribiendo en vivo: en qué está (`reading`, `writing`, `preparing`, `applying`), el texto hasta donde va y los cambios que ya decidió; como mucho uno cada 120 ms y solo si cambió. El mensaje final (`chat_message`) lo reemplaza |
+| `trazo_draft` | (servidor → proyecto o persona) Trazo escribiendo en vivo: en qué está (`reading`, `writing`, `preparing`, `applying`), el texto hasta donde va y los cambios que ya decidió; como mucho uno cada 120 ms y solo si cambió. El mensaje final (`chat_message`) lo reemplaza. Funciona con Ollama, Gemini y Bedrock (`ConverseStream`) |
 | `diagram_activity` | (servidor → proyecto) Se guardó un diagrama: quién lo cambió, nombre y número de clases (la app móvil lo notifica). Como el editor guarda solo cada pocos segundos, sale como mucho uno cada 30 s por diagrama; el último cambio de la ráfaga se avisa al cumplirse el plazo |
 
 ## Trazo e IA local
@@ -292,7 +293,7 @@ Base `uml_studio_ai`:
 | Colección | Contenido |
 | --- | --- |
 | `chat_conversations` | El canal del equipo de cada proyecto y la conversación privada de cada persona con Trazo (las anteriores quedan como historial): quién la empezó, número de mensajes y el **resumen** de los mensajes antiguos |
-| `chat_messages` | Cada mensaje: autor (id y nombre), texto, menciones, diagrama en el que actuó Trazo, intención (`answer`, `edit`, `propose`, `clarify`, `vision`), operaciones propuestas o aplicadas, estado de la propuesta y quién la aplicó, modelo, latencia y tokens |
+| `chat_messages` | Cada mensaje: autor (id y nombre), texto, menciones, diagrama en el que actuó Trazo, intención (`answer`, `edit`, `propose`, `clarify`, `vision`), operaciones propuestas o aplicadas, estado de la propuesta y quién la aplicó, **revisión** del cambio de Trazo (pendiente, aceptado o deshecho, por quién, y el diagrama antes y después), modelo, latencia y tokens |
 | `canvas_activity` | **Quién hizo qué** en cada lienzo: persona (o «Trazo a pedido de X»), diagrama, cada cambio (clases, atributos, métodos y relaciones creados, cambiados o quitados, con su hora) y un resumen legible. Los cambios seguidos de la misma persona en el mismo diagrama durante 15 minutos se suman en una entrada; crear y luego borrar algo se anula |
 | `project_presence` | Cuándo dejó cada persona el proyecto por última vez, para «¿qué hubo desde mi última conexión?» |
 | `trazo_settings` | Cómo trabaja Trazo en cada proyecto («Configurar Trazo»): entrega, estilo, creatividad, modelo y quién lo cambió por última vez |
@@ -307,6 +308,10 @@ Con eso Trazo responde, siempre a pedido:
 
 - **Revisión dirigida**: «@Trazo revisa lo que hizo Marco» trabaja sobre el lienzo donde trabajó Marco, revisa solo sus cambios, nombra al autor y, si hay mejoras, deja una propuesta. Al pedir una revisión el sistema añade observaciones verificadas que un modelo de 7B suele pasar por alto: atributos que repiten una relación (`codigoProveedor` junto a la relación con `Proveedor`), clases sin `id` y dinero en `Double`.
 - **Puesta al día**: «¿qué hizo Ana?», «¿qué han avanzado?» o «ponme al día» resumen la actividad por persona y diagrama; «desde mi última conexión» cuenta solo los cambios posteriores a la última vez que esa persona dejó el proyecto.
+
+### Revisar los cambios de Trazo
+
+Todo lo que Trazo cambia en un lienzo (una edición, una propuesta aplicada, una foto digitalizada o vaciar el diagrama) queda **pendiente de revisión**: se guarda el diagrama antes y después, el editor lo resalta para todos (verde lo nuevo, ámbar lo que cambió; lo quitado se nombra en la barra) y cualquiera con permiso de edición lo **acepta** o lo **deshace** (`POST /chat/messages/:id/review`). Deshacer revierte solo lo que tocó Trazo, sobre el diagrama actual, sin perder lo que el equipo cambió después; lo guarda a nombre de quien deshace y Trazo lo cuenta en la conversación. Un cambio nuevo de Trazo en el mismo diagrama da por aceptado el anterior. Si el antes o el después no están completos, el servidor se niega a deshacer.
 
 ### Configurar Trazo
 

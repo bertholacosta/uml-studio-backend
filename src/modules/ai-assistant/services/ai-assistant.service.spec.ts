@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  NotFoundException,
 } from '@nestjs/common';
 import {
   AiAssistantService,
@@ -79,6 +80,29 @@ class FakeConversations {
     return message;
   });
   revertProposal = jest.fn();
+  startReview = jest.fn(async (id: string, before: any, after: any) => {
+    const message = this.messages.find((m) => m.id === id);
+    if (!message) return null;
+    message.review = { state: 'pending', before, after };
+    return message;
+  });
+  decideReview = jest.fn(async (id: string, state: string, by?: any) => {
+    const message = this.messages.find((m) => m.id === id);
+    if (message?.review?.state !== 'pending') return null;
+    message.review = { ...message.review, state, by };
+    return message;
+  });
+  pendingReviewsOn = jest.fn(async (diagramId: string) =>
+    this.messages.filter(
+      (m) => m.diagramId === diagramId && m.review?.state === 'pending',
+    ),
+  );
+  findConversation = jest.fn(async (id: string) => ({
+    id,
+    projectId: 'proj-1',
+    channel: id === 'conv-direct' ? 'direct' : 'team',
+    ownerId: id === 'conv-direct' ? 'user-1' : '',
+  }));
   startNew = jest.fn(async (projectId: string, channel: string) => ({
     id: 'conv-new',
     projectId,
@@ -1246,6 +1270,158 @@ describe('AiAssistantService', () => {
           ),
         ).rejects.toThrow(ForbiddenException);
         expect(settings.save).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('revisión de los cambios de Trazo', () => {
+      const pago = JSON.stringify({
+        reply: 'Ana, creé Pago.',
+        intent: 'edit',
+        changesSummary: 'Clase Pago',
+        operations: [
+          { op: 'add_class', name: 'Pago', attributes: [], methods: [] },
+        ],
+      });
+      const cliente = {
+        id: 'c',
+        name: 'Cliente',
+        position: { x: 0, y: 0 },
+        attributes: [{ name: 'id', type: 'UUID' }],
+        methods: [],
+      };
+      const withCliente = { ...baseDto, currentNodes: [cliente] };
+      const edited = () =>
+        conversations.messages.find((m) => m.intent === 'edit');
+
+      it('cada edición queda pendiente de revisión con el diagrama antes y después', async () => {
+        mockModelResponse(pago);
+        await run(withCliente);
+
+        const message = edited();
+        expect(message.review.state).toBe('pending');
+        expect(message.review.before.nodes.map((n: any) => n.name)).toEqual([
+          'Cliente',
+        ]);
+        expect(message.review.after.nodes.map((n: any) => n.name)).toEqual([
+          'Cliente',
+          'Pago',
+        ]);
+      });
+
+      it('un cambio nuevo en el mismo diagrama da por aceptado el anterior', async () => {
+        mockModelResponse(pago);
+        await run(withCliente);
+        const first = edited();
+        mockModelResponse(pago.replace(/Pago/g, 'Factura'));
+        await run(withCliente);
+
+        expect(first.review.state).toBe('accepted');
+        expect(
+          conversations.messages.filter((m) => m.review?.state === 'pending'),
+        ).toHaveLength(1);
+      });
+
+      it('aceptar quita el resaltado sin tocar el diagrama', async () => {
+        mockModelResponse(pago);
+        await run(withCliente);
+        diagrams.saveAst.mockClear();
+
+        const result = await service.reviewChange(
+          edited().id,
+          { decision: 'accept' },
+          ana,
+        );
+        expect(result.action).toBe('review_accepted');
+        expect(edited().review).toMatchObject({
+          state: 'accepted',
+          by: { userName: 'Ana Pérez' },
+        });
+        expect(diagrams.saveAst).not.toHaveBeenCalled();
+        await expect(
+          service.reviewChange(edited().id, { decision: 'revert' }, ana),
+        ).rejects.toThrow(ConflictException);
+      });
+
+      it('deshacer revierte solo lo de Trazo, lo guarda a nombre de quien deshace y lo cuenta', async () => {
+        mockModelResponse(pago);
+        await run(withCliente);
+        diagrams.saveAst.mockClear();
+        const luis = { id: 'user-2', fullName: 'Luis Rojas' };
+        const pagoNode = edited().review.after.nodes[1];
+        // Fue en la conversación privada de Ana: Luis ni la ve ni la deshace
+        await expect(
+          service.reviewChange(edited().id, { decision: 'revert' }, luis),
+        ).rejects.toThrow(NotFoundException);
+        // Ana agregó un atributo a Cliente después del cambio de Trazo
+        const current = [
+          {
+            ...cliente,
+            attributes: [
+              ...cliente.attributes,
+              { name: 'email', type: 'String' },
+            ],
+          },
+          pagoNode,
+        ];
+
+        const result = await service.reviewChange(
+          edited().id,
+          {
+            decision: 'revert',
+            activeDiagramId: 'diag-123',
+            currentNodes: current,
+            currentConnections: [],
+          },
+          ana,
+        );
+
+        expect(result.nodes.map((n) => n.name)).toEqual(['Cliente']);
+        expect(result.nodes[0].attributes.map((a) => a.name)).toEqual([
+          'id',
+          'email',
+        ]);
+        expect(diagrams.saveAst).toHaveBeenCalledWith(
+          'diag-123',
+          expect.anything(),
+          'user-1',
+          { userId: 'user-1', userName: 'Ana Pérez' },
+        );
+        expect(
+          collaborationGateway.broadcastAiMutation,
+        ).toHaveBeenLastCalledWith(
+          'diag-123',
+          result.nodes,
+          result.connections,
+        );
+        expect(edited().review.state).toBe('reverted');
+        expect(conversations.messages.at(-1).text).toBe(
+          'Ana Pérez deshizo los cambios que hice en #Ventas (Clase Pago).',
+        );
+      });
+
+      it('no deshace un cambio con el antes o el después incompletos', async () => {
+        mockModelResponse(pago);
+        await run(withCliente);
+        edited().review.before = { nodes: [[]], connections: [] };
+        diagrams.saveAst.mockClear();
+
+        await expect(
+          service.reviewChange(edited().id, { decision: 'revert' }, ana),
+        ).rejects.toThrow(BadRequestException);
+        expect(diagrams.saveAst).not.toHaveBeenCalled();
+        expect(edited().review.state).toBe('pending');
+      });
+
+      it('quien solo puede ver no acepta ni deshace', async () => {
+        mockModelResponse(pago);
+        await run(withCliente);
+        access.assertDiagramAccess.mockRejectedValueOnce(
+          new ForbiddenException(),
+        );
+        await expect(
+          service.reviewChange(edited().id, { decision: 'accept' }, ana),
+        ).rejects.toThrow(ForbiddenException);
+        expect(edited().review.state).toBe('pending');
       });
     });
 

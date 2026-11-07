@@ -82,6 +82,42 @@ export class ChatProposal {
 }
 const ChatProposalSchema = SchemaFactory.createForClass(ChatProposal);
 
+/** pending: resaltado en el lienzo, a la espera; accepted: se queda; reverted: se deshizo. */
+export type ChatReviewState = 'pending' | 'accepted' | 'reverted';
+
+/** Diagrama tal como lo intercambian el editor y Trazo (nodos y relaciones). */
+export interface CanvasSnapshot {
+  nodes: Record<string, any>[];
+  connections: Record<string, any>[];
+}
+
+/**
+ * Revisión de un cambio que Trazo hizo en el lienzo: se resalta para todos y cualquiera con
+ * permiso de edición lo acepta o lo deshace. Guarda el diagrama antes y después del cambio.
+ */
+@Schema({ _id: false })
+export class ChatReview {
+  @Prop({
+    type: String,
+    required: true,
+    enum: ['pending', 'accepted', 'reverted'],
+  })
+  state: ChatReviewState;
+
+  @Prop({ type: ChatAuthorSchema })
+  by?: ChatAuthor;
+
+  @Prop()
+  at?: Date;
+
+  @Prop({ type: MongooseSchema.Types.Mixed })
+  before?: CanvasSnapshot;
+
+  @Prop({ type: MongooseSchema.Types.Mixed })
+  after?: CanvasSnapshot;
+}
+const ChatReviewSchema = SchemaFactory.createForClass(ChatReview);
+
 /** Mensaje de una conversación: de una persona del equipo o de Trazo. */
 @Schema({ collection: 'chat_messages', timestamps: true })
 export class AiMessage {
@@ -145,6 +181,10 @@ export class AiMessage {
   @Prop({ type: ChatProposalSchema })
   proposal?: ChatProposal;
 
+  /** Cambio de Trazo en el lienzo, a la espera de que alguien lo acepte o lo deshaga. */
+  @Prop({ type: ChatReviewSchema })
+  review?: ChatReview;
+
   /** Miniatura de la imagen adjunta (data URI). */
   @Prop()
   image?: string;
@@ -164,3 +204,7 @@ export class AiMessage {
 export type AiMessageDocument = HydratedDocument<AiMessage>;
 export const AiMessageSchema = SchemaFactory.createForClass(AiMessage);
 AiMessageSchema.index({ conversationId: 1, _id: 1 });
+AiMessageSchema.index(
+  { diagramId: 1, 'review.state': 1 },
+  { partialFilterExpression: { 'review.state': 'pending' } },
+);
