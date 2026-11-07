@@ -1202,6 +1202,69 @@ describe('AiAssistantService', () => {
       });
     });
 
+    describe('vista previa de una propuesta', () => {
+      const proposal = (state: 'pending' | 'applied' = 'pending') =>
+        conversations.messages.push({
+          id: 'm-prop',
+          conversationId: 'conv-team',
+          projectId: 'proj-1',
+          channel: 'team',
+          diagramId: 'diag-123',
+          role: 'assistant',
+          text: 'Ana, te propongo Pago',
+          changesSummary: 'Clase Pago',
+          operations: [
+            { op: 'add_class', name: 'Pago', attributes: [], methods: [] },
+          ],
+          proposal: { state },
+        });
+      const open = {
+        activeDiagramId: 'diag-123',
+        currentNodes: [
+          {
+            id: 'c',
+            name: 'Cliente',
+            position: { x: 0, y: 0 },
+            attributes: [],
+            methods: [],
+          },
+        ],
+        currentConnections: [],
+      };
+
+      it('calcula cómo quedaría el diagrama sin guardar ni avisar a nadie', async () => {
+        proposal();
+        access.assertDiagramAccess.mockResolvedValueOnce('VIEWER');
+        const preview = await service.previewProposal('m-prop', open, ana);
+
+        // Basta con poder ver el diagrama
+        expect(access.assertDiagramAccess).toHaveBeenCalledWith(
+          'diag-123',
+          'user-1',
+          'read',
+        );
+        expect(preview).toMatchObject({
+          messageId: 'm-prop',
+          diagramId: 'diag-123',
+          changesSummary: 'Clase Pago',
+          skipped: [],
+        });
+        expect(preview.nodes.map((n) => n.name)).toEqual(['Cliente', 'Pago']);
+        // El diagrama existente conserva sus ids, para poder resaltar las diferencias
+        expect(preview.nodes[0].id).toBe('c');
+        expect(diagrams.saveAst).not.toHaveBeenCalled();
+        expect(collaborationGateway.broadcastAiMutation).not.toHaveBeenCalled();
+        expect(conversations.markProposalApplied).not.toHaveBeenCalled();
+      });
+
+      it('no hay vista previa de una propuesta ya aplicada', async () => {
+        proposal('applied');
+        await expect(
+          service.previewProposal('m-prop', open, ana),
+        ).rejects.toThrow(ConflictException);
+      });
+    });
+
     it('aplica una propuesta una sola vez y la guarda en su diagrama', async () => {
       conversations.messages.push({
         id: 'm-prop',

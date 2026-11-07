@@ -187,6 +187,7 @@ Todas las rutas llevan el prefijo `/api` y, salvo registro, login y estado, requ
 | `GET` | `/chat/projects/:projectId/direct` | Conversación privada con Trazo |
 | `POST` | `/chat/projects/:projectId/messages` | Mensaje al canal (`team`) o privado (`direct`); con @Trazo (o en privado) responde Trazo (`202`: su respuesta llega por Socket.IO) |
 | `POST` | `/chat/projects/:projectId/:channel/reset` | Nueva conversación (el canal del equipo, solo el administrador) |
+| `POST` | `/chat/messages/:messageId/preview` | Vista previa de una propuesta: cómo quedaría el diagrama, sin guardarlo (también para lectores) |
 | `POST` | `/chat/messages/:messageId/apply` | Aplicar una propuesta de Trazo |
 | `GET` | `/projects/:id/trazo-settings` | Configuración de Trazo del proyecto, los modelos que se pueden elegir y si quien consulta puede cambiarla |
 | `PUT` | `/projects/:id/trazo-settings` | Cambiar la configuración (editores y administrador); Trazo lo anuncia en el canal del equipo |

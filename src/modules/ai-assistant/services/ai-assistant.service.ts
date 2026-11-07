@@ -75,6 +75,7 @@ import {
   TrazoSettingsDto,
   UpdateTrazoSettingsDto,
 } from '../dtos/trazo-settings.dto';
+import { ProposalPreviewDto } from '../dtos/proposal-preview.dto';
 import {
   parseModelJson,
   sanitizeConnections,
@@ -723,12 +724,15 @@ export class AiAssistantService {
 
   // --- Propuestas ---
 
-  /** Aplica a su diagrama los cambios que Trazo propuso en un mensaje. */
-  async applyProposal(
+  /**
+   * Propuesta de un mensaje y la conversación desde la que la usa esta persona. Una propuesta
+   * privada solo la ve (y la aplica) quien conversa con Trazo.
+   */
+  private async findProposal(
     messageId: string,
-    dto: ApplyProposalDto,
     user: ChatUser,
-  ): Promise<AiResponseDto> {
+    level: 'read' | 'write',
+  ) {
     const message = await this.conversations.findMessage(messageId);
     if (!message?.proposal || !message.operations?.length) {
       throw new NotFoundException('Propuesta no encontrada');
@@ -736,21 +740,81 @@ export class AiAssistantService {
     if (!message.diagramId) {
       throw new BadRequestException('La propuesta no indica en qué diagrama');
     }
-    await this.access.assertDiagramAccess(message.diagramId, user.id, 'write');
+    await this.access.assertDiagramAccess(message.diagramId, user.id, level);
     const conversation = await this.conversations.getActive(
       message.projectId,
       message.channel,
       this.authorOf(user),
     );
-    // Una propuesta privada solo la ve (y la aplica) quien conversa con Trazo
     if (
       conversation.id !== message.conversationId &&
       message.channel === 'direct'
     ) {
       throw new NotFoundException('Propuesta no encontrada');
     }
+    return { message, conversation, diagramId: message.diagramId };
+  }
+
+  /** El diagrama tal como quedaría con la propuesta (lo mismo que haría «Aplicar»). */
+  private proposalResult(
+    current: { nodes: UmlClassNode[]; connections: UmlConnection[] },
+    operations: unknown[],
+  ) {
+    const result = applyOperations(
+      current.nodes,
+      current.connections,
+      operations as DiagramOperation[],
+    );
+    return {
+      ...this.finalize(result.nodes, result.connections),
+      skipped: result.skipped,
+    };
+  }
+
+  /**
+   * Vista previa de una propuesta: cómo quedaría el diagrama, sin guardar ni avisar a nadie.
+   * Basta con poder ver el diagrama, así un lector también revisa lo que propone Trazo.
+   */
+  async previewProposal(
+    messageId: string,
+    dto: ApplyProposalDto,
+    user: ChatUser,
+  ): Promise<ProposalPreviewDto> {
+    const { message, diagramId } = await this.findProposal(
+      messageId,
+      user,
+      'read',
+    );
+    if (message.proposal?.state === 'applied') {
+      throw new ConflictException('Esta propuesta ya se aplicó');
+    }
+    const current = await this.loadCanvas(diagramId, dto, Date.now(), user);
+    const { nodes, connections, skipped } = this.proposalResult(
+      current,
+      message.operations,
+    );
+    return {
+      messageId,
+      diagramId,
+      changesSummary: message.changesSummary || '',
+      nodes,
+      connections,
+      skipped,
+    };
+  }
+
+  /** Aplica a su diagrama los cambios que Trazo propuso en un mensaje. */
+  async applyProposal(
+    messageId: string,
+    dto: ApplyProposalDto,
+    user: ChatUser,
+  ): Promise<AiResponseDto> {
+    const { message, conversation, diagramId } = await this.findProposal(
+      messageId,
+      user,
+      'write',
+    );
     const receivedAt = Date.now();
-    const diagramId = message.diagramId;
 
     return this.enqueue(conversation, user, async () => {
       const applied = await this.conversations.markProposalApplied(
@@ -762,20 +826,15 @@ export class AiAssistantService {
       }
       try {
         const current = await this.loadCanvas(diagramId, dto, receivedAt, user);
-        const result = applyOperations(
-          current.nodes,
-          current.connections,
-          message.operations as unknown as DiagramOperation[],
+        const { nodes, connections, skipped } = this.proposalResult(
+          current,
+          message.operations,
         );
-        if (result.skipped.length) {
+        if (skipped.length) {
           this.logger.warn(
-            `Operaciones de la propuesta no aplicadas: ${result.skipped.join('; ')}`,
+            `Operaciones de la propuesta no aplicadas: ${skipped.join('; ')}`,
           );
         }
-        const { nodes, connections } = this.finalize(
-          result.nodes,
-          result.connections,
-        );
         await this.saveCanvas(diagramId, nodes, connections, user);
         this.collaborationGateway.broadcastAiMutation(
           diagramId,

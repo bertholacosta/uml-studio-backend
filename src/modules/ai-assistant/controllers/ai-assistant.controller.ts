@@ -37,6 +37,7 @@ import {
   TrazoSettingsDto,
   UpdateTrazoSettingsDto,
 } from '../dtos/trazo-settings.dto';
+import { ProposalPreviewDto } from '../dtos/proposal-preview.dto';
 
 enum ChannelParam {
   team = 'team',
@@ -145,6 +146,24 @@ export class AiAssistantController {
     @CurrentUser() user: User,
   ): Promise<TrazoSettingsDto> {
     return this.aiAssistantService.updateTrazoSettings(projectId, dto, user);
+  }
+
+  @Post('chat/messages/:messageId/preview')
+  @HttpCode(HttpStatus.OK)
+  @SkipThrottle()
+  @ApiOperation({
+    summary:
+      'Vista previa de una propuesta de Trazo: cómo quedaría el diagrama, sin guardarlo',
+  })
+  @ApiResponse({ status: 200, type: ProposalPreviewDto })
+  @ApiResponse({ status: 404, description: 'Propuesta no encontrada' })
+  @ApiResponse({ status: 409, description: 'La propuesta ya se aplicó' })
+  async previewProposal(
+    @Param('messageId') messageId: string,
+    @Body() dto: ApplyProposalDto,
+    @CurrentUser() user: User,
+  ): Promise<ProposalPreviewDto> {
+    return this.aiAssistantService.previewProposal(messageId, dto, user);
   }
 
   @Post('chat/messages/:messageId/apply')
