@@ -262,6 +262,15 @@ export class AiConversationService {
     return this.conversations.findById(conversationId).exec();
   }
 
+  /** Una propuesta pendiente queda reemplazada por otra que la corrige. */
+  async replaceProposal(messageId: string): Promise<AiMessageDocument | null> {
+    return this.messages.findOneAndUpdate(
+      { _id: messageId, 'proposal.state': 'pending' },
+      { $set: { 'proposal.state': 'replaced' } },
+      { new: true },
+    );
+  }
+
   async revertProposal(messageId: string): Promise<void> {
     await this.messages.updateOne(
       { _id: messageId },
@@ -305,6 +314,14 @@ export class AiConversationService {
       diagramName: message.diagramName,
       clientId: message.clientId,
       replyTo: message.replyTo,
+      quote: message.quote
+        ? {
+            messageId: message.quote.messageId,
+            authorName: message.quote.authorName,
+            isTrazo: message.quote.isTrazo,
+            text: message.quote.text,
+          }
+        : undefined,
       intent: message.intent,
       status: message.status,
       changesSummary: message.changesSummary,

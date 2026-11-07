@@ -71,8 +71,13 @@ export type ChatStatus = 'success' | 'clarification' | 'error';
 
 @Schema({ _id: false })
 export class ChatProposal {
-  @Prop({ type: String, required: true, enum: ['pending', 'applied'] })
-  state: 'pending' | 'applied';
+  /** replaced: alguien respondió pidiendo cambios y Trazo dejó una propuesta nueva. */
+  @Prop({
+    type: String,
+    required: true,
+    enum: ['pending', 'applied', 'replaced'],
+  })
+  state: 'pending' | 'applied' | 'replaced';
 
   @Prop({ type: ChatAuthorSchema })
   appliedBy?: ChatAuthor;
@@ -81,6 +86,24 @@ export class ChatProposal {
   appliedAt?: Date;
 }
 const ChatProposalSchema = SchemaFactory.createForClass(ChatProposal);
+
+/** Mensaje al que responde otro («responder», como en WhatsApp): lo justo para mostrarlo. */
+@Schema({ _id: false })
+export class ChatQuote {
+  @Prop({ required: true })
+  messageId: string;
+
+  @Prop({ required: true })
+  authorName: string;
+
+  @Prop({ default: false })
+  isTrazo: boolean;
+
+  /** Comienzo del texto citado. */
+  @Prop({ default: '' })
+  text: string;
+}
+const ChatQuoteSchema = SchemaFactory.createForClass(ChatQuote);
 
 /** pending: resaltado en el lienzo, a la espera; accepted: se queda; reverted: se deshizo. */
 export type ChatReviewState = 'pending' | 'accepted' | 'reverted';
@@ -157,6 +180,10 @@ export class AiMessage {
   /** Mensaje al que responde Trazo. */
   @Prop()
   replyTo?: string;
+
+  /** Mensaje que cita quien escribe al pulsar «Responder». */
+  @Prop({ type: ChatQuoteSchema })
+  quote?: ChatQuote;
 
   @Prop({
     type: String,

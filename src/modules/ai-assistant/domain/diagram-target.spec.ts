@@ -28,6 +28,21 @@ describe('resolveDiagramTarget', () => {
     ).toMatchObject({ diagram: { id: 'd1' }, reason: 'tag' });
   });
 
+  it('al responder a un mensaje, trabaja en el diagrama de ese mensaje (salvo #Diagrama)', () => {
+    expect(
+      resolveDiagramTarget('pon monto como Double', diagrams, {
+        activeDiagramId: 'd1',
+        activityDiagramId: 'd1',
+        quotedDiagramId: 'd2',
+      }),
+    ).toMatchObject({ diagram: { id: 'd2' }, reason: 'quote' });
+    expect(
+      resolveDiagramTarget('hazlo en #Ventas', diagrams, {
+        quotedDiagramId: 'd2',
+      }),
+    ).toMatchObject({ diagram: { id: 'd1' }, reason: 'tag' });
+  });
+
   it('usa el diagrama abierto si no se marca ninguno', () => {
     expect(
       resolveDiagramTarget('agrega Producto', diagrams, {

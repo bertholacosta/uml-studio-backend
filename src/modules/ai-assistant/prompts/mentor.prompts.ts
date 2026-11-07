@@ -34,6 +34,7 @@ CÓMO CONVERSAS:
 - Español claro y directo, sin saludos de relleno. La longitud y el tono los marca la sección CÓMO TRABAJAS EN ESTE PROYECTO; si piden una explicación detallada, dásela.
 - Habla solo de lo que ves en el DIAGRAMA ACTUAL; no inventes clases ni atributos que no existan.
 - En una lluvia de ideas ("¿qué podríamos construir aquí?"), da ideas concretas y deja sus operaciones como "propose" para que el equipo las vea y las aplique en la pizarra.
+- Si el mensaje RESPONDE A una propuesta tuya que aún no se aplicó: si piden cambiarla ("pon monto como Double", "quita esa relación"), devuelve la propuesta corregida COMPLETA (todas sus operaciones, ya con los cambios) como "propose": reemplaza a la anterior. Si piden aplicarla tal cual ("dale", "aplícala") y la persona puede editar, usa "edit" con esas mismas operaciones.
 
 QUÉ HACES CON CADA MENSAJE ("intent"; si CÓMO TRABAJAS EN ESTE PROYECTO dice otra cosa, manda ella):
 - "answer": preguntas conceptuales, dudas o comentarios. "operations": [].
@@ -235,6 +236,13 @@ export interface MentorTurnContext {
   findings?: string[];
   /** Configuración de Trazo del proyecto (cómo entrega y con qué estilo responde). */
   settings?: TrazoSettingsValues;
+  /** Mensaje al que responde quien escribe («Responder»), con su propuesta si sigue pendiente. */
+  quoted?: {
+    authorName: string;
+    isTrazo: boolean;
+    text: string;
+    proposal?: { changesSummary: string; operations: unknown[] };
+  };
   nodes: UmlClassNode[];
   connections: UmlConnection[];
 }
@@ -278,6 +286,7 @@ ${lines.length ? lines.join('\n') : '- sin cambios registrados'}${note ? `\n${no
 }
 
 const TARGET_REASONS: Record<TargetReason, string> = {
+  quote: 'es el del mensaje al que responde',
   tag: 'lo indicó con #',
   activity: 'es donde trabajó la persona de la que se habla',
   open: 'es el diagrama que tiene abierto',
@@ -294,6 +303,21 @@ RESUMEN DE LA CONVERSACIÓN ANTERIOR DEL EQUIPO:
 ${summary}
 `
     : MENTOR_INSTRUCTION;
+}
+
+/** El mensaje citado y, si era una propuesta pendiente, sus operaciones para poder corregirla. */
+function quotedBlock(ctx: MentorTurnContext): string {
+  const quoted = ctx.quoted;
+  if (!quoted) return '';
+  const who = quoted.isTrazo ? 'TI (Trazo)' : quoted.authorName;
+  const proposal = quoted.proposal
+    ? `
+ESA ES TU PROPUESTA, AÚN SIN APLICAR: ${quoted.proposal.changesSummary}
+SUS OPERACIONES: ${JSON.stringify(quoted.proposal.operations)}`
+    : '';
+  return `RESPONDE A ESTE MENSAJE DE ${who}: "${quoted.text}"${proposal}
+
+`;
 }
 
 /** Mensaje actual: proyecto, canal, quién está conectado, el lienzo y lo que dice la persona. */
@@ -347,8 +371,19 @@ ${settingsRules(ctx.settings || DEFAULT_TRAZO_SETTINGS)}
 ${ctx.activity ? `\n${ctx.activity}\n` : ''}
 ${canvas}
 
-MENSAJE DE ${ctx.speaker} (${ctx.canEdit ? 'puede editar' : 'solo lectura: no puede editar'}):
-"${ctx.prompt}"`;
+${quotedBlock(ctx)}MENSAJE DE ${ctx.speaker} (${ctx.canEdit ? 'puede editar' : 'solo lectura: no puede editar'}):
+"${ctx.prompt}"${proposalTask(ctx)}`;
+}
+
+/**
+ * Al responder a una propuesta pendiente, la tarea va al final (el modelo pequeño atiende más a
+ * lo último que lee): devolver la propuesta corregida completa, aplicarla o solo contestar.
+ */
+function proposalTask(ctx: MentorTurnContext): string {
+  if (!ctx.quoted?.proposal) return '';
+  return `
+
+TAREA: este mensaje responde a TU PROPUESTA. Si pide cambios sobre ella, responde con "intent": "propose" y en "operations" la lista COMPLETA de operaciones de la propuesta ya corregida (copia SUS OPERACIONES y aplica lo que pide; no devuelvas solo lo nuevo), y en "changesSummary" el resumen de la propuesta corregida. Si pide aplicarla tal cual y la persona puede editar, usa "edit" con esas operaciones. Si solo pregunta algo, "answer".`;
 }
 
 /** Turno previo de un colaborador tal como lo ve el modelo: con su nombre delante. */

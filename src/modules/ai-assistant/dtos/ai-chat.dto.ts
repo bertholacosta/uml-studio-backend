@@ -27,9 +27,23 @@ class ChatAuthorDto {
   userName: string;
 }
 
+class ChatQuoteDto {
+  @ApiProperty()
+  messageId: string;
+
+  @ApiProperty({ example: 'Trazo' })
+  authorName: string;
+
+  @ApiProperty()
+  isTrazo: boolean;
+
+  @ApiProperty({ description: 'Comienzo del texto citado' })
+  text: string;
+}
+
 class ChatProposalDto {
-  @ApiProperty({ enum: ['pending', 'applied'] })
-  state: 'pending' | 'applied';
+  @ApiProperty({ enum: ['pending', 'applied', 'replaced'] })
+  state: 'pending' | 'applied' | 'replaced';
 
   @ApiPropertyOptional({ type: ChatAuthorDto })
   appliedBy?: ChatAuthorDto;
@@ -128,6 +142,12 @@ export class ChatMessageDto {
 
   @ApiPropertyOptional({ type: ChatProposalDto })
   proposal?: ChatProposalDto;
+
+  @ApiPropertyOptional({
+    type: ChatQuoteDto,
+    description: 'Mensaje al que responde («Responder»)',
+  })
+  quote?: ChatQuoteDto;
 
   @ApiPropertyOptional({
     type: ChatReviewDto,
@@ -265,6 +285,15 @@ export class SendChatMessageDto extends OpenDiagramDto {
   @IsOptional()
   @IsBoolean()
   readOnly?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Id del mensaje al que se responde (como en WhatsApp). Si es de Trazo, Trazo contesta sin necesidad de @Trazo y, si era una propuesta, puede corregirla',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  quoteOf?: string;
 }
 
 /** Diagrama actual sobre el que se aplica una propuesta de Trazo. */

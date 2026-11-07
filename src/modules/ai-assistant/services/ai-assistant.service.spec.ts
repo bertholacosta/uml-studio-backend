@@ -80,6 +80,12 @@ class FakeConversations {
     return message;
   });
   revertProposal = jest.fn();
+  replaceProposal = jest.fn(async (id: string) => {
+    const message = this.messages.find((m) => m.id === id);
+    if (message?.proposal?.state !== 'pending') return null;
+    message.proposal = { state: 'replaced' };
+    return message;
+  });
   startReview = jest.fn(async (id: string, before: any, after: any) => {
     const message = this.messages.find((m) => m.id === id);
     if (!message) return null;
@@ -1270,6 +1276,158 @@ describe('AiAssistantService', () => {
           ),
         ).rejects.toThrow(ForbiddenException);
         expect(settings.save).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('responder a un mensaje («Responder»)', () => {
+      const team = (text: string, extra: Record<string, unknown> = {}) =>
+        service.submitMessage(
+          'proj-1',
+          { channel: 'team', text, activeDiagramId: 'diag-123', ...extra },
+          ana,
+        );
+      const trazoSaid = (extra: Record<string, unknown> = {}) => {
+        const message = {
+          id: 'm-trazo',
+          conversationId: 'conv-team',
+          projectId: 'proj-1',
+          channel: 'team',
+          role: 'assistant',
+          author: { userId: 'ai_assistant', userName: 'Trazo' },
+          text: 'Ana, te propongo la clase Pago con id y monto.',
+          diagramId: 'diag-otro',
+          ...extra,
+        };
+        conversations.messages.push(message);
+        return message;
+      };
+
+      it('responder a Trazo lo llama sin escribir @Trazo y guarda la cita', async () => {
+        trazoSaid();
+        mockModelResponse(
+          JSON.stringify({
+            reply: 'Ana, claro.',
+            intent: 'answer',
+            operations: [],
+          }),
+        );
+        const { message, result } = await team('¿y por qué BigDecimal?', {
+          quoteOf: 'm-trazo',
+        });
+
+        expect(message).toMatchObject({
+          mentions: ['ai_assistant'],
+          quote: {
+            messageId: 'm-trazo',
+            authorName: 'Trazo',
+            isTrazo: true,
+            text: 'Ana, te propongo la clase Pago con id y monto.',
+          },
+        });
+        await expect(result).resolves.toMatchObject({ action: 'answer' });
+        const prompt = aiProvider.generate.mock.calls[0][0].parts[0].text;
+        expect(prompt).toContain(
+          'RESPONDE A ESTE MENSAJE DE TI (Trazo): "Ana, te propongo la clase Pago con id y monto."',
+        );
+      });
+
+      it('responder a una persona no llama a Trazo', async () => {
+        conversations.messages.push({
+          id: 'm-luis',
+          conversationId: 'conv-team',
+          role: 'user',
+          author: { userId: 'user-2', userName: 'Luis Rojas' },
+          text: 'Yo hago Inventario',
+        });
+        const { message, result } = await team('Perfecto, yo Ventas', {
+          quoteOf: 'm-luis',
+        });
+        expect(result).toBeUndefined();
+        expect(message.quote).toMatchObject({
+          authorName: 'Luis Rojas',
+          isTrazo: false,
+        });
+        expect(aiProvider.generate).not.toHaveBeenCalled();
+      });
+
+      it('corrige una propuesta pendiente en su diagrama y la anterior queda reemplazada', async () => {
+        access.listProjectDiagrams.mockResolvedValue([
+          { id: 'diag-123', name: 'Ventas', classNames: [] },
+          { id: 'diag-otro', name: 'Pagos', classNames: [] },
+        ]);
+        const old = trazoSaid({
+          intent: 'propose',
+          changesSummary: 'Clase Pago (id, monto)',
+          operations: [
+            {
+              op: 'add_class',
+              name: 'Pago',
+              attributes: [
+                { name: 'id', type: 'UUID' },
+                { name: 'monto', type: 'BigDecimal' },
+              ],
+            },
+          ],
+          proposal: { state: 'pending' },
+        });
+        mockModelResponse(
+          JSON.stringify({
+            reply: 'Ana, pon monto como Double.',
+            intent: 'propose',
+            changesSummary: 'Clase Pago (id, monto: Double)',
+            // Como hace a menudo el modelo pequeño: solo el cambio, no la propuesta completa
+            operations: [
+              {
+                op: 'update_class',
+                target: 'Pago',
+                updateAttributes: [{ name: 'monto', type: 'Double' }],
+              },
+            ],
+          }),
+        );
+        const { result } = await team('pon monto como Double', {
+          quoteOf: 'm-trazo',
+        });
+        await result;
+
+        const prompt = aiProvider.generate.mock.calls[0][0].parts[0].text;
+        expect(prompt).toContain(
+          'ESA ES TU PROPUESTA, AÚN SIN APLICAR: Clase Pago (id, monto)',
+        );
+        expect(prompt).toContain('"monto","type":"BigDecimal"');
+        expect(prompt).toContain('TAREA: este mensaje responde a TU PROPUESTA');
+        // Trabaja en el diagrama de la propuesta, no en el que está abierto
+        expect(prompt).toContain(
+          'LIENZO: #Pagos (es el del mensaje al que responde)',
+        );
+        expect(old.proposal.state).toBe('replaced');
+        expect(conversations.messages.at(-1)).toMatchObject({
+          intent: 'propose',
+          proposal: { state: 'pending' },
+          text: 'Ana, te corregí la propuesta: Clase Pago (id, monto: Double). Reemplaza a la anterior; cualquier editor puede pulsar «Aplicar».',
+          operations: [
+            {
+              op: 'add_class',
+              name: 'Pago',
+              attributes: [
+                { name: 'id', type: 'UUID' },
+                { name: 'monto', type: 'Double' },
+              ],
+            },
+          ],
+        });
+        await expect(
+          service.previewProposal('m-trazo', {}, ana),
+        ).rejects.toThrow(ConflictException);
+      });
+
+      it('ignora una cita de otra conversación', async () => {
+        trazoSaid({ conversationId: 'conv-direct' });
+        const { message, result } = await team('hola equipo', {
+          quoteOf: 'm-trazo',
+        });
+        expect(message.quote).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
 

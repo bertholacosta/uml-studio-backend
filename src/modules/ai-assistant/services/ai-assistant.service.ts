@@ -68,6 +68,7 @@ import { reviewFindings } from '../domain/model-review';
 import { operationSteps } from '../domain/operation-steps';
 import { readStreamDraft } from '../domain/stream-draft';
 import { revertChange } from '../domain/revert-change';
+import { reviseProposal } from '../domain/revise-proposal';
 import { TrazoSettingsService } from '../settings/trazo-settings.service';
 import {
   CREATIVITY_TEMPERATURE,
@@ -129,6 +130,12 @@ const DAY_MS = 24 * 60 * 60_000;
 
 const TRAZO: ChatAuthor = { userId: AI_USER_ID, userName: AI_USER_NAME };
 const TRAZO_MENTION = /(^|[^\p{L}\d_])@trazo\b/iu;
+
+/** Comienzo de un texto, para citarlo. */
+function snippet(text: string, max = 200): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+}
 /** Respuestas que dicen que la persona no puede editar o que el cambio ya está hecho. */
 const CLAIMS_CHANGE =
   /solo lectura|no puedes editar|\b(?:cre[eé]|apliqu[eé]|agregu[eé]|añad[ií]|elimin[eé]|borr[eé]|renombr[eé]|relacion[eé]|listo)(?![\p{L}])/iu;
@@ -373,10 +380,21 @@ export class AiAssistantService {
     const canEdit = role !== ProjectRole.VIEWER && !dto.readOnly;
     const receivedAt = Date.now();
     const text = dto.text.trim();
+    const conversation = await this.conversations.getActive(
+      projectId,
+      dto.channel,
+      this.authorOf(user),
+    );
+    // «Responder» a un mensaje de la misma conversación; si es de Trazo, no hace falta @Trazo
+    const found = dto.quoteOf
+      ? await this.conversations.findMessage(dto.quoteOf)
+      : null;
+    const quoted = found?.conversationId === conversation.id ? found : null;
     const callsTrazo =
       dto.channel === 'direct' ||
       TRAZO_MENTION.test(text) ||
-      !!dto.mentions?.includes(AI_USER_ID);
+      !!dto.mentions?.includes(AI_USER_ID) ||
+      quoted?.role === 'assistant';
     const mentions = [
       ...new Set([
         ...(dto.mentions || []),
@@ -384,17 +402,22 @@ export class AiAssistantService {
       ]),
     ];
 
-    const conversation = await this.conversations.getActive(
-      projectId,
-      dto.channel,
-      this.authorOf(user),
-    );
     const userMessage = await this.publish(conversation, {
       role: 'user',
       author: this.authorOf(user),
       text,
       clientId: dto.clientId,
       mentions: mentions.length ? mentions : undefined,
+      ...(quoted
+        ? {
+            quote: {
+              messageId: quoted.id,
+              authorName: quoted.author.userName,
+              isTrazo: quoted.role === 'assistant',
+              text: snippet(quoted.text),
+            },
+          }
+        : {}),
     });
     const message = this.conversations.toDto(userMessage);
     if (!callsTrazo) return { message };
@@ -406,6 +429,7 @@ export class AiAssistantService {
         dto,
         receivedAt,
         user,
+        quoted?.diagramId,
       );
       const response = await this.answerText(
         conversation,
@@ -414,6 +438,7 @@ export class AiAssistantService {
         canEdit,
         text,
         canvas,
+        quoted,
       );
       this.summarizeLater(conversation.id);
       return response;
@@ -452,7 +477,13 @@ export class AiAssistantService {
     canEdit: boolean,
     prompt: string,
     canvas: Canvas,
+    quoted?: AiMessageDocument | null,
   ): Promise<AiResponseDto> {
+    // Propuesta a la que responde, si sigue pendiente: Trazo puede corregirla o aplicarla
+    const quotedProposal =
+      quoted?.proposal?.state === 'pending' && quoted.operations?.length
+        ? quoted
+        : null;
     const {
       target,
       nodes: currentNodes,
@@ -533,6 +564,19 @@ export class AiAssistantService {
               canEdit,
               prompt,
               settings,
+              quoted: quoted
+                ? {
+                    authorName: quoted.author.userName,
+                    isTrazo: quoted.role === 'assistant',
+                    text: snippet(quoted.text, 600),
+                    proposal: quotedProposal
+                      ? {
+                          changesSummary: quotedProposal.changesSummary || '',
+                          operations: quotedProposal.operations || [],
+                        }
+                      : undefined,
+                  }
+                : undefined,
               channel: conversation.channel,
               projectName,
               diagrams: canvas.diagrams.map((d) => ({
@@ -616,6 +660,22 @@ export class AiAssistantService {
         modelUsed: generated.model,
       };
 
+      // Al corregir una propuesta citada, el cambio se integra en la propuesta original (el
+      // modelo pequeño suele devolver solo lo nuevo) y el texto lo escribe el orquestador
+      if (
+        quotedProposal &&
+        (intent === 'propose' || intent === 'edit') &&
+        operations.length
+      ) {
+        operations = reviseProposal(
+          quotedProposal.operations || [],
+          operations,
+        );
+        if (intent === 'propose') {
+          text = `te corregí la propuesta: ${parsed.changesSummary || 'con los cambios que pediste'}. Reemplaza a la anterior; cualquier editor puede pulsar «Aplicar».`;
+        }
+      }
+
       // Hay cambios que hacer pero no se sabe en qué lienzo: se pregunta
       if (
         !target &&
@@ -656,6 +716,7 @@ export class AiAssistantService {
           edited.connections,
         );
         draft.phase('applying');
+        await this.retireProposal(quotedProposal);
         await this.saveCanvas(target.diagram.id, nodes, connections, user);
         this.collaborationGateway.broadcastAiMutation(
           target.diagram.id,
@@ -691,6 +752,8 @@ export class AiAssistantService {
 
       if (intent === 'propose' && operations.length) {
         const changesSummary = parsed.changesSummary || 'Cambios propuestos.';
+        // La propuesta corregida reemplaza a la que se citó
+        await this.retireProposal(quotedProposal);
         const message = await reply({
           text: text || 'te propongo estos cambios.',
           intent: 'propose',
@@ -890,8 +953,8 @@ export class AiAssistantService {
       user,
       'read',
     );
-    if (message.proposal?.state === 'applied') {
-      throw new ConflictException('Esta propuesta ya se aplicó');
+    if (message.proposal?.state !== 'pending') {
+      throw new ConflictException('Esta propuesta ya se aplicó o se reemplazó');
     }
     const current = await this.loadCanvas(diagramId, dto, Date.now(), user);
     const { nodes, connections, skipped } = this.proposalResult(
@@ -927,7 +990,9 @@ export class AiAssistantService {
         this.authorOf(user),
       );
       if (!applied) {
-        throw new ConflictException('Esta propuesta ya se aplicó');
+        throw new ConflictException(
+          'Esta propuesta ya se aplicó o se reemplazó',
+        );
       }
       try {
         const current = await this.loadCanvas(diagramId, dto, receivedAt, user);
@@ -971,6 +1036,15 @@ export class AiAssistantService {
         throw err;
       }
     });
+  }
+
+  /** Una propuesta pendiente que Trazo corrigió o aplicó al responder a su cita. */
+  private async retireProposal(
+    proposal: AiMessageDocument | null,
+  ): Promise<void> {
+    if (!proposal) return;
+    const replaced = await this.conversations.replaceProposal(proposal.id);
+    if (replaced) await this.emitUpdated(replaced);
   }
 
   // --- Revisión de los cambios de Trazo ---
@@ -1274,6 +1348,7 @@ export class AiAssistantService {
     dto: OpenDiagramDto,
     receivedAt: number,
     user: ChatUser,
+    quotedDiagramId?: string,
   ): Promise<Canvas> {
     const [diagrams, threadDiagramId, members] = await Promise.all([
       this.access.listProjectDiagrams(conversation.projectId),
@@ -1290,6 +1365,7 @@ export class AiAssistantService {
     const target = resolveDiagramTarget(text, diagrams, {
       activeDiagramId: dto.activeDiagramId,
       threadDiagramId,
+      quotedDiagramId,
       // «Revisa lo que hizo Marco»: el lienzo donde trabajó Marco por última vez
       activityDiagramId: focus.aboutWork ? entries[0]?.diagramId : undefined,
     });

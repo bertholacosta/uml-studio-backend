@@ -13,7 +13,7 @@ export interface DiagramRef {
  * el que trabajó Trazo en la conversación) u only (el proyecto tiene un único diagrama).
  */
 export type TargetReason =
-  'tag' | 'activity' | 'open' | 'classes' | 'thread' | 'only';
+  'tag' | 'quote' | 'activity' | 'open' | 'classes' | 'thread' | 'only';
 
 export interface DiagramTarget {
   diagram: DiagramRef;
@@ -41,6 +41,8 @@ export function resolveDiagramTarget(
     activeDiagramId?: string;
     threadDiagramId?: string;
     activityDiagramId?: string;
+    /** Diagrama del mensaje al que responde («Responder» a una propuesta de Trazo). */
+    quotedDiagramId?: string;
   } = {},
 ): DiagramTarget | null {
   for (const [, token] of text.matchAll(TAG)) {
@@ -48,6 +50,9 @@ export function resolveDiagramTarget(
     const tagged = diagrams.find((d) => normalizeForFuzzy(d.name) === wanted);
     if (tagged) return { diagram: tagged, reason: 'tag' };
   }
+
+  const quoted = diagrams.find((d) => d.id === hints.quotedDiagramId);
+  if (quoted) return { diagram: quoted, reason: 'quote' };
 
   const worked = diagrams.find((d) => d.id === hints.activityDiagramId);
   if (worked) return { diagram: worked, reason: 'activity' };

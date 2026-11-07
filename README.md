@@ -185,7 +185,7 @@ Todas las rutas llevan el prefijo `/api` y, salvo registro, login y estado, requ
 | `PUT` | `/diagrams/:id/ast` | Guardar el contenido del diagrama |
 | `GET` | `/chat/projects/:projectId/team` | Canal del equipo del proyecto (últimos mensajes) |
 | `GET` | `/chat/projects/:projectId/direct` | Conversación privada con Trazo |
-| `POST` | `/chat/projects/:projectId/messages` | Mensaje al canal (`team`) o privado (`direct`); con @Trazo (o en privado) responde Trazo (`202`: su respuesta llega por Socket.IO) |
+| `POST` | `/chat/projects/:projectId/messages` | Mensaje al canal (`team`) o privado (`direct`); con @Trazo (o en privado) responde Trazo (`202`: su respuesta llega por Socket.IO). Con `quoteOf` responde a otro mensaje (como en WhatsApp): si es de Trazo, no hace falta @Trazo |
 | `POST` | `/chat/projects/:projectId/:channel/reset` | Nueva conversación (el canal del equipo, solo el administrador) |
 | `POST` | `/chat/messages/:messageId/preview` | Vista previa de una propuesta: cómo quedaría el diagrama, sin guardarlo (también para lectores) |
 | `POST` | `/chat/messages/:messageId/apply` | Aplicar una propuesta de Trazo |
@@ -308,6 +308,10 @@ Con eso Trazo responde, siempre a pedido:
 
 - **Revisión dirigida**: «@Trazo revisa lo que hizo Marco» trabaja sobre el lienzo donde trabajó Marco, revisa solo sus cambios, nombra al autor y, si hay mejoras, deja una propuesta. Al pedir una revisión el sistema añade observaciones verificadas que un modelo de 7B suele pasar por alto: atributos que repiten una relación (`codigoProveedor` junto a la relación con `Proveedor`), clases sin `id` y dinero en `Double`.
 - **Puesta al día**: «¿qué hizo Ana?», «¿qué han avanzado?» o «ponme al día» resumen la actividad por persona y diagrama; «desde mi última conexión» cuenta solo los cambios posteriores a la última vez que esa persona dejó el proyecto.
+
+### Responder a un mensaje
+
+Cualquier mensaje se puede **responder** (`quoteOf`): la respuesta guarda una cita (autor y comienzo del texto) y se muestra encima, como en WhatsApp. Responder a Trazo lo llama sin escribir @Trazo, en el diagrama de ese mensaje. Si lo citado es una **propuesta pendiente**, Trazo recibe sus operaciones y la tarea de corregirla: la propuesta corregida reemplaza a la anterior (que queda como `replaced` y ya no se aplica). Como el modelo pequeño a veces devuelve solo el cambio («update_class Pago» cuando Pago aún no existe), el orquestador lo integra en la propuesta original (`domain/revise-proposal.ts`).
 
 ### Revisar los cambios de Trazo
 
