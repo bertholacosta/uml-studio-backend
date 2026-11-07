@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException, ForbiddenException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
-import { DiagramService } from './diagram.service';
+import { ANNOUNCE_INTERVAL_MS, DiagramService } from './diagram.service';
 import { DiagramRepository } from '../repositories/diagram.repository';
 import { ProjectAccessService } from '../../projects/services/project-access.service';
 import { CollaborationGateway } from '../../projects/gateways/collaboration.gateway';
@@ -303,6 +303,44 @@ describe('DiagramService', () => {
         width: 0,
         isAnchor: true,
       });
+    });
+
+    it('agrupa los avisos de guardados seguidos (autoguardado) en uno por intervalo', async () => {
+      jest.useFakeTimers();
+      try {
+        const save = () =>
+          service.saveAst(
+            mockDiagramId,
+            { nodes: [], connections: [] },
+            mockUserId,
+          );
+        const announced = () =>
+          gateway.emitToProject.mock.calls.filter(
+            ([, event]) => event === 'diagram_activity',
+          ).length;
+
+        await save();
+        expect(announced()).toBe(1); // el primero sale al momento
+        await save();
+        await save();
+        expect(announced()).toBe(1);
+
+        jest.advanceTimersByTime(ANNOUNCE_INTERVAL_MS);
+        expect(announced()).toBe(2); // el último de la ráfaga, al cumplirse el intervalo
+
+        await save();
+        expect(announced()).toBe(2); // aún dentro del intervalo del aviso anterior
+        jest.advanceTimersByTime(ANNOUNCE_INTERVAL_MS);
+        expect(announced()).toBe(3);
+        jest.advanceTimersByTime(ANNOUNCE_INTERVAL_MS);
+        expect(announced()).toBe(3); // sin cambios nuevos no hay más avisos
+
+        await save();
+        expect(announced()).toBe(4); // tras un rato sin avisos, sale al momento
+      } finally {
+        service.onModuleDestroy();
+        jest.useRealTimers();
+      }
     });
 
     it('un VIEWER no puede guardar', async () => {

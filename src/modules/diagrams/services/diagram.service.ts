@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, OnModuleDestroy } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { DiagramRepository } from '../repositories/diagram.repository';
 import { ProjectAccessService } from '../../projects/services/project-access.service';
@@ -22,8 +22,31 @@ export interface DiagramActor {
   onBehalfOf?: { userId: string; userName: string };
 }
 
+/**
+ * Como mucho un aviso diagram_activity por diagrama en este intervalo: el editor guarda solo
+ * cada pocos segundos y la app móvil recarga la lista con cada aviso. El último cambio de la
+ * ráfaga se avisa al cumplirse el intervalo.
+ */
+export const ANNOUNCE_INTERVAL_MS = 30_000;
+
+interface DiagramActivityEvent {
+  projectId: string;
+  diagramId: string;
+  diagramName: string;
+  userId: string;
+  userName: string;
+  classCount: number;
+  at: string;
+}
+
 @Injectable()
-export class DiagramService {
+export class DiagramService implements OnModuleDestroy {
+  /** Último aviso por diagrama y, si llegó otro antes de tiempo, el que queda pendiente. */
+  private readonly announcements = new Map<
+    string,
+    { lastAt: number; pending?: DiagramActivityEvent; timer?: NodeJS.Timeout }
+  >();
+
   constructor(
     private readonly diagramRepository: DiagramRepository,
     private readonly access: ProjectAccessService,
@@ -184,19 +207,48 @@ export class DiagramService {
    */
   private announce(diagram: DiagramResponseDto, who: DiagramActor): void {
     if (!diagram.projectId) return;
-    this.collaborationGateway.emitToProject(
-      diagram.projectId,
-      'diagram_activity',
-      {
-        projectId: diagram.projectId,
-        diagramId: diagram.id,
-        diagramName: diagram.name,
-        userId: who.userId,
-        userName: who.userName,
-        classCount: diagram.nodes.filter((n) => !n.isAnchor).length,
-        at: new Date().toISOString(),
+    const event: DiagramActivityEvent = {
+      projectId: diagram.projectId,
+      diagramId: diagram.id,
+      diagramName: diagram.name,
+      userId: who.userId,
+      userName: who.userName,
+      classCount: diagram.nodes.filter((n) => !n.isAnchor).length,
+      at: new Date().toISOString(),
+    };
+    const now = Date.now();
+    const state = this.announcements.get(diagram.id);
+    if (!state || now - state.lastAt >= ANNOUNCE_INTERVAL_MS) {
+      if (state?.timer) clearTimeout(state.timer);
+      this.announcements.set(diagram.id, { lastAt: now });
+      this.emitActivity(event);
+      return;
+    }
+    state.pending = event;
+    state.timer ??= setTimeout(
+      () => {
+        const pending = state.pending;
+        this.announcements.set(diagram.id, { lastAt: Date.now() });
+        if (pending) this.emitActivity(pending);
       },
+      state.lastAt + ANNOUNCE_INTERVAL_MS - now,
     );
+    state.timer.unref?.();
+  }
+
+  private emitActivity(event: DiagramActivityEvent): void {
+    this.collaborationGateway.emitToProject(
+      event.projectId,
+      'diagram_activity',
+      event,
+    );
+  }
+
+  onModuleDestroy(): void {
+    for (const { timer } of this.announcements.values()) {
+      if (timer) clearTimeout(timer);
+    }
+    this.announcements.clear();
   }
 
   async remove(

@@ -208,7 +208,7 @@ Socket.IO en el espacio de nombres `/collaboration`, autenticado con el mismo JW
 | `chat_message` | (servidor → proyecto o persona) Mensaje nuevo o actualizado del canal del equipo o de la conversación privada |
 | `trazo_status` | (servidor → proyecto o persona) Trazo está respondiendo a alguien (`busy`, `userName`) o ha terminado |
 | `chat_reset` | (servidor → proyecto o persona) Empezó una conversación nueva |
-| `diagram_activity` | (servidor → proyecto) Se guardó un diagrama: quién lo cambió, nombre y número de clases (la app móvil lo notifica) |
+| `diagram_activity` | (servidor → proyecto) Se guardó un diagrama: quién lo cambió, nombre y número de clases (la app móvil lo notifica). Como el editor guarda solo cada pocos segundos, sale como mucho uno cada 30 s por diagrama; el último cambio de la ráfaga se avisa al cumplirse el plazo |
 
 ## Trazo e IA local
 
