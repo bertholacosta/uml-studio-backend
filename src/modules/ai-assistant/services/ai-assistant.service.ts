@@ -65,6 +65,7 @@ import {
 import { resolveManyToManyRelationships } from '../domain/many-to-many.resolver';
 import { reviewFindings } from '../domain/model-review';
 import { operationSteps } from '../domain/operation-steps';
+import { readStreamDraft } from '../domain/stream-draft';
 import { TrazoSettingsService } from '../settings/trazo-settings.service';
 import {
   CREATIVITY_TEMPERATURE,
@@ -128,6 +129,15 @@ const TRAZO_MENTION = /(^|[^\p{L}\d_])@trazo\b/iu;
 /** Respuestas que dicen que la persona no puede editar o que el cambio ya está hecho. */
 const CLAIMS_CHANGE =
   /solo lectura|no puedes editar|\b(?:cre[eé]|apliqu[eé]|agregu[eé]|añad[ií]|elimin[eé]|borr[eé]|renombr[eé]|relacion[eé]|listo)(?![\p{L}])/iu;
+/** Como mucho un borrador en vivo (trazo_draft) cada tanto: el modelo escribe muy seguido. */
+export const DRAFT_INTERVAL_MS = 120;
+
+/**
+ * En qué está Trazo mientras responde: leyendo el contexto (o esperando al servidor del
+ * modelo), escribiendo la respuesta, preparando los cambios o aplicándolos al diagrama.
+ */
+export type DraftPhase = 'reading' | 'writing' | 'preparing' | 'applying';
+
 /** Respuestas que ofrecen una propuesta para aplicar. */
 const OFFERS_PROPOSAL = /propuesta|propongo|«aplicar»|pulsa aplicar/i;
 const INTENTS: ChatIntent[] = ['answer', 'edit', 'propose', 'clarify'];
@@ -497,6 +507,7 @@ export class AiAssistantService {
     if (diagramId) {
       this.collaborationGateway.lockNodesForAi(diagramId, lockedIds);
     }
+    const draft = this.liveDraft(conversation, userMessage, user, onCanvas);
 
     try {
       const [context, projectName] = await Promise.all([
@@ -545,6 +556,7 @@ export class AiAssistantService {
         schema: MENTOR_RESPONSE_SCHEMA,
         temperature: CREATIVITY_TEMPERATURE[settings.creativity],
         model: settings.model,
+        onDelta: draft.push,
       });
       const parsed = parseModelJson(generated.text);
       // Se corrigen antes de aplicarlas o guardarlas como propuesta
@@ -635,6 +647,7 @@ export class AiAssistantService {
           edited.nodes,
           edited.connections,
         );
+        draft.phase('applying');
         await this.saveCanvas(target.diagram.id, nodes, connections, user);
         this.collaborationGateway.broadcastAiMutation(
           target.diagram.id,
@@ -716,10 +729,88 @@ export class AiAssistantService {
         'no pude procesar ese mensaje. Prueba a reformularlo.',
       );
     } finally {
+      draft.close();
       if (diagramId) {
         this.collaborationGateway.unlockNodesForAi(diagramId, lockedIds);
       }
     }
+  }
+
+  /**
+   * Borrador en vivo de la respuesta de Trazo (evento trazo_draft) para que el equipo lo vea
+   * escribir: en qué está, el texto hasta donde va y los cambios que ya decidió. Se envía como
+   * mucho cada DRAFT_INTERVAL_MS; el mensaje final (chat_message) lo reemplaza.
+   */
+  private liveDraft(
+    conversation: AiConversationDocument,
+    userMessage: AiMessageDocument,
+    user: ChatUser,
+    onCanvas: { diagramId?: string; diagramName?: string },
+  ) {
+    let raw = '';
+    let phase: DraftPhase = 'reading';
+    let lastSent = 0;
+    let timer: NodeJS.Timeout | undefined;
+    let closed = false;
+    /** Lo último enviado, para no repetir un borrador que no cambió. */
+    let lastKey = '';
+    const first = firstName(user.fullName);
+
+    const send = () => {
+      timer = undefined;
+      if (closed) return;
+      const read = readStreamDraft(raw);
+      // El nombre se antepone igual que en la respuesta final, cuando ya se ve cómo empieza
+      const text =
+        read.replyDone || read.reply.length > first.length + 1
+          ? addressTo(user.fullName, read.reply)
+          : read.reply;
+      const shownPhase =
+        phase === 'writing' && (read.replyDone || read.inOperations)
+          ? 'preparing'
+          : phase;
+      const actions = operationSteps(read.operations as DiagramOperation[]);
+      // Mientras el modelo escribe el resto del JSON el borrador no cambia: no se reenvía
+      const key = JSON.stringify([shownPhase, text, actions]);
+      if (key === lastKey) return;
+      lastKey = key;
+      lastSent = Date.now();
+      this.emit(conversation, 'trazo_draft', {
+        projectId: conversation.projectId,
+        conversationId: conversation.id,
+        channel: conversation.channel,
+        replyTo: userMessage.id,
+        ...onCanvas,
+        phase: shownPhase,
+        text,
+        actions,
+      });
+    };
+    const schedule = () => {
+      if (closed || timer) return;
+      const wait = Math.max(0, lastSent + DRAFT_INTERVAL_MS - Date.now());
+      timer = setTimeout(send, wait);
+      timer.unref?.();
+    };
+    schedule();
+
+    return {
+      /** Trozo nuevo del modelo. */
+      push: (chunk: string) => {
+        raw += chunk;
+        if (phase === 'reading') phase = 'writing';
+        schedule();
+      },
+      phase: (next: DraftPhase) => {
+        phase = next;
+        schedule();
+      },
+      /** Ya no se envían más borradores (llega o llegó el mensaje final). */
+      close: () => {
+        closed = true;
+        if (timer) clearTimeout(timer);
+      },
+    };
   }
 
   // --- Propuestas ---

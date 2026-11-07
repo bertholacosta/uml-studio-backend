@@ -33,6 +33,11 @@ export interface AiGenerateRequest {
   temperature?: number;
   /** Modelo elegido por el equipo; se ignora si no está entre los de models(). */
   model?: string;
+  /**
+   * Recibe el texto a medida que el modelo lo escribe (respuesta en streaming), para mostrar a
+   * Trazo escribiendo en tiempo real. El proveedor que no lo admite responde todo al final.
+   */
+  onDelta?: (chunk: string) => void;
 }
 
 export interface AiGenerateResult {

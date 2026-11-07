@@ -22,6 +22,7 @@ interface OllamaChatResponse {
   prompt_eval_count?: number;
   eval_count?: number;
   error?: string;
+  done?: boolean;
 }
 
 /**
@@ -102,7 +103,8 @@ export class OllamaProvider implements AiProvider {
 
     const body = {
       model,
-      stream: false,
+      // En streaming Ollama envía una línea JSON por cada trozo de texto
+      stream: !!request.onDelta,
       keep_alive: this.keepAlive,
       messages: [
         { role: 'system', content: request.systemInstruction },
@@ -148,6 +150,10 @@ export class OllamaProvider implements AiProvider {
       );
     }
 
+    if (response.ok && request.onDelta && response.body) {
+      return this.readStream(response.body, model, started, request.onDelta);
+    }
+
     const data = (await response
       .json()
       .catch(() => ({}))) as OllamaChatResponse;
@@ -172,12 +178,67 @@ export class OllamaProvider implements AiProvider {
       );
     }
 
+    return this.result(data.message?.content || '', data, model, started);
+  }
+
+  /** Lee la respuesta línea a línea (NDJSON) y entrega cada trozo de texto al llegar. */
+  private async readStream(
+    body: ReadableStream<Uint8Array>,
+    model: string,
+    started: number,
+    onDelta: (chunk: string) => void,
+  ): Promise<AiGenerateResult> {
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let text = '';
+    let last: OllamaChatResponse = { model };
+    const handle = (line: string) => {
+      if (!line.trim()) return;
+      const data = JSON.parse(line) as OllamaChatResponse;
+      if (data.error) throw new Error(`Ollama: ${data.error}`);
+      const chunk = data.message?.content || '';
+      if (chunk) {
+        text += chunk;
+        onDelta(chunk);
+      }
+      last = data;
+    };
+    try {
+      for await (const part of body as unknown as AsyncIterable<Uint8Array>) {
+        buffer += decoder.decode(part, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        lines.forEach(handle);
+      }
+      handle(buffer + decoder.decode());
+    } catch (error: any) {
+      if (
+        error instanceof SyntaxError ||
+        error?.message?.startsWith('Ollama:')
+      ) {
+        throw error;
+      }
+      // Conexión cortada o tiempo agotado a mitad de la respuesta
+      throw new AiProviderUnavailableError(
+        `El servidor de IA (${this.baseUrl}) cortó la respuesta: ${error?.cause?.code || error?.name || error?.message}`,
+        error,
+      );
+    }
+    return this.result(text, last, model, started);
+  }
+
+  private result(
+    text: string,
+    data: OllamaChatResponse,
+    model: string,
+    started: number,
+  ): AiGenerateResult {
     const latencyMs = Date.now() - started;
     this.logger.log(
       `${data.model || model} respondió en ${latencyMs} ms (${data.prompt_eval_count ?? '?'} → ${data.eval_count ?? '?'} tokens)`,
     );
     return {
-      text: data.message?.content || '',
+      text,
       model: data.model || model,
       latencyMs,
       usage: {

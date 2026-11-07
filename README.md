@@ -214,6 +214,7 @@ Socket.IO en el espacio de nombres `/collaboration`, autenticado con el mismo JW
 | `trazo_status` | (servidor → proyecto o persona) Trazo está respondiendo a alguien (`busy`, `userName`) o ha terminado |
 | `chat_reset` | (servidor → proyecto o persona) Empezó una conversación nueva |
 | `trazo_settings` | (servidor → proyecto) Alguien cambió la configuración de Trazo; los paneles abiertos se actualizan |
+| `trazo_draft` | (servidor → proyecto o persona) Trazo escribiendo en vivo: en qué está (`reading`, `writing`, `preparing`, `applying`), el texto hasta donde va y los cambios que ya decidió; como mucho uno cada 120 ms y solo si cambió. El mensaje final (`chat_message`) lo reemplaza |
 | `diagram_activity` | (servidor → proyecto) Se guardó un diagrama: quién lo cambió, nombre y número de clases (la app móvil lo notifica). Como el editor guarda solo cada pocos segundos, sale como mucho uno cada 30 s por diagrama; el último cambio de la ráfaga se avisa al cumplirse el plazo |
 
 ## Trazo e IA local
@@ -278,7 +279,8 @@ Orquestador (API en AWS)
         · si piden una revisión, los problemas que detecta el sistema          │
         · cómo trabaja Trazo en el proyecto (trazo_settings)                  │
         · el mensaje y quién lo escribe (y si puede editar)                    │
-   5. ◄────────────────────────────── JSON: respuesta + operaciones ──────────┘
+   5. ◄──────────── JSON en streaming: respuesta + operaciones ──────────────┘
+      mientras llega, el equipo ve a Trazo escribir (trazo_draft)
    6. aplica las operaciones, guarda el diagrama (PostgreSQL) y lo difunde al lienzo
    7. guarda la respuesta (MongoDB) y la envía al canal: «Ana, listo: agregué Lote en #Inventario»
 ```

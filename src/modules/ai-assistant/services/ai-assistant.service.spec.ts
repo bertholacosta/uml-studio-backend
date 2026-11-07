@@ -4,7 +4,11 @@ import {
   ConflictException,
   ForbiddenException,
 } from '@nestjs/common';
-import { AiAssistantService, ChatUser } from './ai-assistant.service';
+import {
+  AiAssistantService,
+  ChatUser,
+  DRAFT_INTERVAL_MS,
+} from './ai-assistant.service';
 import {
   AI_PROVIDER,
   AI_VISION_PROVIDER,
@@ -1024,6 +1028,49 @@ describe('AiAssistantService', () => {
       expect(conversations.messages[1]).toMatchObject({
         proposal: { state: 'pending' },
         diagramId: 'diag-123',
+        diagramName: 'Ventas',
+      });
+    });
+
+    it('muestra a Trazo escribiendo en vivo y cierra el borrador con el mensaje final', async () => {
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const chunks = [
+        '{"reply":"Ana, cre',
+        'é Pago","intent":"edit","changesSummary":"Clase Pago","operations":[{"op":"add_class","name":"Pago","attributes":[{"name":"id","type":"UUID"}]}',
+        ']}',
+      ];
+      aiProvider.generate.mockImplementationOnce(async (request) => {
+        for (const chunk of chunks) {
+          await sleep(DRAFT_INTERVAL_MS + 30);
+          request.onDelta(chunk);
+        }
+        await sleep(DRAFT_INTERVAL_MS + 30);
+        return { text: chunks.join(''), model: 'trazo-test' };
+      });
+
+      await run(baseDto);
+
+      const events = collaborationGateway.emitToUser.mock.calls
+        .filter(([, event]) => ['trazo_draft', 'chat_message'].includes(event))
+        .map(([, event, payload]) =>
+          event === 'chat_message'
+            ? `mensaje ${payload.role}`
+            : `${payload.phase}: ${payload.text}${payload.actions.length ? ` [${payload.actions.join('; ')}]` : ''}`,
+        );
+      expect(events).toEqual([
+        'mensaje user',
+        'reading: ',
+        'writing: Ana, cre',
+        // Un borrador que no cambia no se reenvía
+        'preparing: Ana, creé Pago [crea la clase Pago con id: UUID]',
+        'mensaje assistant',
+      ]);
+      const draft = collaborationGateway.emitToUser.mock.calls.find(
+        ([, event]) => event === 'trazo_draft',
+      )[2];
+      expect(draft).toMatchObject({
+        channel: 'direct',
+        replyTo: conversations.messages[0].id,
         diagramName: 'Ventas',
       });
     });

@@ -89,7 +89,7 @@ export class GeminiProvider implements AiProvider {
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         try {
           const started = Date.now();
-          const response = await this.client.models.generateContent({
+          const params = {
             model,
             contents,
             config: {
@@ -98,7 +98,10 @@ export class GeminiProvider implements AiProvider {
               ...(request.json ? { responseMimeType: 'application/json' } : {}),
               abortSignal: AbortSignal.timeout(this.timeoutMs),
             },
-          });
+          };
+          const response = request.onDelta
+            ? await this.stream(params, request.onDelta)
+            : await this.client.models.generateContent(params);
           const latencyMs = Date.now() - started;
           this.logger.log(`${model} respondió en ${latencyMs} ms`);
           return {
@@ -131,6 +134,27 @@ export class GeminiProvider implements AiProvider {
       'Gemini está saturado o no respondió a tiempo',
       lastError,
     );
+  }
+
+  /** Respuesta en streaming: entrega cada trozo y devuelve el texto completo y el uso. */
+  private async stream(
+    params: Parameters<GoogleGenAI['models']['generateContentStream']>[0],
+    onDelta: (chunk: string) => void,
+  ) {
+    let text = '';
+    let usageMetadata:
+      { promptTokenCount?: number; candidatesTokenCount?: number } | undefined;
+    for await (const chunk of await this.client.models.generateContentStream(
+      params,
+    )) {
+      const delta = chunk.text || '';
+      if (delta) {
+        text += delta;
+        onDelta(delta);
+      }
+      usageMetadata = chunk.usageMetadata ?? usageMetadata;
+    }
+    return { text, usageMetadata };
   }
 
   private isTransient(error: any): boolean {
