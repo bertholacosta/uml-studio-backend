@@ -64,6 +64,17 @@ import {
 } from '../domain/diagram-operations';
 import { resolveManyToManyRelationships } from '../domain/many-to-many.resolver';
 import { reviewFindings } from '../domain/model-review';
+import { operationSteps } from '../domain/operation-steps';
+import { TrazoSettingsService } from '../settings/trazo-settings.service';
+import {
+  CREATIVITY_TEMPERATURE,
+  describeSettingsChange,
+  TrazoSettingsValues,
+} from '../settings/trazo-settings';
+import {
+  TrazoSettingsDto,
+  UpdateTrazoSettingsDto,
+} from '../dtos/trazo-settings.dto';
 import {
   parseModelJson,
   sanitizeConnections,
@@ -113,6 +124,11 @@ const DAY_MS = 24 * 60 * 60_000;
 
 const TRAZO: ChatAuthor = { userId: AI_USER_ID, userName: AI_USER_NAME };
 const TRAZO_MENTION = /(^|[^\p{L}\d_])@trazo\b/iu;
+/** Respuestas que dicen que la persona no puede editar o que el cambio ya está hecho. */
+const CLAIMS_CHANGE =
+  /solo lectura|no puedes editar|\b(?:cre[eé]|apliqu[eé]|agregu[eé]|añad[ií]|elimin[eé]|borr[eé]|renombr[eé]|relacion[eé]|listo)(?![\p{L}])/iu;
+/** Respuestas que ofrecen una propuesta para aplicar. */
+const OFFERS_PROPOSAL = /propuesta|propongo|«aplicar»|pulsa aplicar/i;
 const INTENTS: ChatIntent[] = ['answer', 'edit', 'propose', 'clarify'];
 // Las miniaturas que se guardan con el mensaje (las fotos completas no)
 const MAX_STORED_IMAGE_CHARS = 400_000;
@@ -175,7 +191,98 @@ export class AiAssistantService {
     private readonly conversations: AiConversationService,
     private readonly diagrams: DiagramService,
     private readonly activity: ActivityService,
+    private readonly settings: TrazoSettingsService,
   ) {}
+
+  // --- Configuración («Configurar Trazo») ---
+
+  async getTrazoSettings(
+    projectId: string,
+    user: ChatUser,
+  ): Promise<TrazoSettingsDto> {
+    const role = await this.access.assertProjectAccess(
+      projectId,
+      user.id,
+      'read',
+    );
+    return this.settingsDto(
+      await this.settings.get(projectId),
+      role !== ProjectRole.VIEWER,
+    );
+  }
+
+  /**
+   * Cambia cómo trabaja Trazo en el proyecto (solo editores y administrador). Trazo lo anuncia
+   * en el canal del equipo, así todos saben cómo responderá, y los paneles abiertos se
+   * actualizan con el evento trazo_settings.
+   */
+  async updateTrazoSettings(
+    projectId: string,
+    dto: UpdateTrazoSettingsDto,
+    user: ChatUser,
+  ): Promise<TrazoSettingsDto> {
+    await this.access.assertProjectAccess(projectId, user.id, 'write');
+    const models = this.ai.models();
+    const model = dto.model?.trim();
+    if (model && !models.includes(model)) {
+      throw new BadRequestException(
+        `El modelo «${model}» no está disponible. Elige uno de: ${models.join(', ')}`,
+      );
+    }
+    const values: TrazoSettingsValues = {
+      delivery: dto.delivery,
+      style: dto.style,
+      creativity: dto.creativity,
+      // El predeterminado no se guarda: así sigue al servidor si este cambia de modelo
+      ...(model && model !== models[0] ? { model } : {}),
+    };
+    const before = await this.settings.get(projectId);
+    const changes = describeSettingsChange(before, values, models[0]);
+    const saved = changes.length
+      ? await this.settings.save(projectId, values, this.authorOf(user))
+      : before;
+    const result = this.settingsDto(saved, true);
+    if (changes.length) {
+      const team = await this.conversations.getActive(
+        projectId,
+        'team',
+        this.authorOf(user),
+      );
+      await this.publish(team, {
+        role: 'assistant',
+        author: TRAZO,
+        intent: 'answer',
+        text: `${user.fullName} cambió cómo trabajo en este proyecto: ahora ${changes.join('; ')}.`,
+      });
+      // Sin canEdit: cada panel conserva el permiso de su propia persona
+      const { canEdit: _canEdit, ...shared } = result;
+      this.collaborationGateway.emitToProject(projectId, 'trazo_settings', {
+        ...shared,
+        projectId,
+      });
+    }
+    return result;
+  }
+
+  private settingsDto(
+    settings: Awaited<ReturnType<TrazoSettingsService['get']>>,
+    canEdit: boolean,
+  ): TrazoSettingsDto {
+    const models = this.ai.models();
+    return {
+      delivery: settings.delivery,
+      style: settings.style,
+      creativity: settings.creativity,
+      model:
+        settings.model && models.includes(settings.model)
+          ? settings.model
+          : models[0],
+      models,
+      canEdit,
+      ...(settings.updatedBy ? { updatedBy: settings.updatedBy } : {}),
+      ...(settings.updatedAt ? { updatedAt: settings.updatedAt } : {}),
+    };
+  }
 
   // --- Conversaciones ---
 
@@ -351,10 +458,13 @@ export class AiAssistantService {
         text: addressTo(user.fullName, fields.text),
       });
 
-    // Vaciar el diagrama no necesita al modelo
+    const settings = await this.settings.get(conversation.projectId);
+
+    // Vaciar el diagrama no necesita al modelo (si el equipo deja que Trazo aplique cambios)
     if (
       diagramId &&
       canEdit &&
+      settings.delivery === 'apply' &&
       !ATTRIBUTE_OR_METHOD.test(prompt) &&
       DELETE_ALL.some((re) => re.test(prompt))
     ) {
@@ -380,7 +490,9 @@ export class AiAssistantService {
 
     // Bloquear los nodos que menciona la instrucción mientras Trazo trabaja
     const lockedIds =
-      diagramId && canEdit ? this.mentionedNodeIds(prompt, currentNodes) : [];
+      diagramId && canEdit && settings.delivery === 'apply'
+        ? this.mentionedNodeIds(prompt, currentNodes)
+        : [];
     if (diagramId) {
       this.collaborationGateway.lockNodesForAi(diagramId, lockedIds);
     }
@@ -400,6 +512,7 @@ export class AiAssistantService {
               speaker: user.fullName,
               canEdit,
               prompt,
+              settings,
               channel: conversation.channel,
               projectName,
               diagrams: canvas.diagrams.map((d) => ({
@@ -429,10 +542,12 @@ export class AiAssistantService {
         ],
         json: true,
         schema: MENTOR_RESPONSE_SCHEMA,
+        temperature: CREATIVITY_TEMPERATURE[settings.creativity],
+        model: settings.model,
       });
       const parsed = parseModelJson(generated.text);
       // Se corrigen antes de aplicarlas o guardarlas como propuesta
-      const operations: DiagramOperation[] = Array.isArray(parsed.operations)
+      let operations: DiagramOperation[] = Array.isArray(parsed.operations)
         ? fixUnrequestedManyToMany(parsed.operations, prompt)
         : [];
       let intent = this.intentOf(parsed, operations);
@@ -446,9 +561,30 @@ export class AiAssistantService {
       }
       // Quien solo puede ver recibe la propuesta para que un editor la aplique
       if (intent === 'edit' && !canEdit) intent = 'propose';
-
-      const text: string =
+      let text: string =
         parsed.reply || parsed.message || parsed.changesSummary || '';
+
+      // La configuración del proyecto manda aunque el modelo no la siga. El modelo pequeño
+      // a veces copia el ejemplo de «solo lectura» o dice que ya lo hizo: entonces el texto
+      // lo escribe el orquestador, para no decir nada falso.
+      if (settings.delivery === 'propose' && canEdit && operations.length) {
+        if (intent === 'edit' || CLAIMS_CHANGE.test(text)) {
+          text = `te dejo la propuesta para que el equipo la revise antes de aplicarla: ${parsed.changesSummary || 'los cambios que pediste'}. Cualquier editor puede pulsar «Aplicar».`;
+        }
+        if (intent === 'edit') intent = 'propose';
+      }
+      if (settings.delivery === 'explain') {
+        const steps = operationSteps(operations);
+        if (intent === 'edit' || intent === 'propose') intent = 'answer';
+        operations = [];
+        if (steps.length) {
+          const explanation =
+            text && !CLAIMS_CHANGE.test(text) && !OFFERS_PROPOSAL.test(text)
+              ? `${text}\n\n`
+              : '';
+          text = `${explanation}En este proyecto solo explico, sin tocar el diagrama. Para hacerlo en el editor: ${steps.join('; ')}.`;
+        }
+      }
       const modelInfo = {
         model: generated.model,
         latencyMs: generated.latencyMs,

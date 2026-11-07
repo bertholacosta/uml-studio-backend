@@ -10,7 +10,7 @@ export class ChatAuthor {
   @Prop({ required: true })
   userName: string;
 }
-const ChatAuthorSchema = SchemaFactory.createForClass(ChatAuthor);
+export const ChatAuthorSchema = SchemaFactory.createForClass(ChatAuthor);
 
 /**
  * team: canal del equipo del proyecto, como un canal de Slack; Trazo es un miembro más y solo

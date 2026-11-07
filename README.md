@@ -155,6 +155,8 @@ La lista completa y comentada está en [`.env.example`](.env.example). Las princ
 | `AI_VISION_PROVIDER` | Proveedor de las imágenes; por defecto, el mismo que `AI_PROVIDER` |
 | `OLLAMA_BASE_URL` | Servidor Ollama: `http://localhost:11434` o la URL del túnel de Colab |
 | `OLLAMA_MODEL` | Modelo de texto (por defecto `trazo`) |
+| `AI_MODELS` | Otros modelos que el equipo puede elegir en «Configurar Trazo», separados por comas; deben existir en el servidor (p. ej. `qwen2.5-coder:7b`, el modelo base de `trazo`, que ya está en Modal) |
+| `OLLAMA_NUM_CTX` | Ventana de contexto que se pide a Ollama (por defecto `8192`, la del Modelfile) |
 | `OLLAMA_VISION_MODEL` | Modelo local con visión, p. ej. `qwen2.5vl:7b` (opcional) |
 | `MODAL_KEY`, `MODAL_SECRET` | Tokens de proxy de Modal, si el servidor del modelo está en Modal |
 | `OLLAMA_API_KEY` | Token si el servidor Ollama está detrás de un proxy con autenticación (opcional) |
@@ -186,6 +188,8 @@ Todas las rutas llevan el prefijo `/api` y, salvo registro, login y estado, requ
 | `POST` | `/chat/projects/:projectId/messages` | Mensaje al canal (`team`) o privado (`direct`); con @Trazo (o en privado) responde Trazo (`202`: su respuesta llega por Socket.IO) |
 | `POST` | `/chat/projects/:projectId/:channel/reset` | Nueva conversación (el canal del equipo, solo el administrador) |
 | `POST` | `/chat/messages/:messageId/apply` | Aplicar una propuesta de Trazo |
+| `GET` | `/projects/:id/trazo-settings` | Configuración de Trazo del proyecto, los modelos que se pueden elegir y si quien consulta puede cambiarla |
+| `PUT` | `/projects/:id/trazo-settings` | Cambiar la configuración (editores y administrador); Trazo lo anuncia en el canal del equipo |
 | `POST` | `/ai/vision-diagram` | Digitalizar un diagrama desde una imagen (`202`) |
 | `POST` | `/codegen/preview/:diagramId` | Vista previa del código generado |
 | `POST` | `/codegen/download/:diagramId` | Descargar el código generado en `.zip` |
@@ -208,6 +212,7 @@ Socket.IO en el espacio de nombres `/collaboration`, autenticado con el mismo JW
 | `chat_message` | (servidor → proyecto o persona) Mensaje nuevo o actualizado del canal del equipo o de la conversación privada |
 | `trazo_status` | (servidor → proyecto o persona) Trazo está respondiendo a alguien (`busy`, `userName`) o ha terminado |
 | `chat_reset` | (servidor → proyecto o persona) Empezó una conversación nueva |
+| `trazo_settings` | (servidor → proyecto) Alguien cambió la configuración de Trazo; los paneles abiertos se actualizan |
 | `diagram_activity` | (servidor → proyecto) Se guardó un diagrama: quién lo cambió, nombre y número de clases (la app móvil lo notifica). Como el editor guarda solo cada pocos segundos, sale como mucho uno cada 30 s por diagrama; el último cambio de la ráfaga se avisa al cumplirse el plazo |
 
 ## Trazo e IA local
@@ -270,6 +275,7 @@ Orquestador (API en AWS)
         · quién cambió qué en los lienzos (canvas_activity), si viene al caso  │
         · el lienzo elegido en texto compacto (PostgreSQL o la sala)           │
         · si piden una revisión, los problemas que detecta el sistema          │
+        · cómo trabaja Trazo en el proyecto (trazo_settings)                  │
         · el mensaje y quién lo escribe (y si puede editar)                    │
    5. ◄────────────────────────────── JSON: respuesta + operaciones ──────────┘
    6. aplica las operaciones, guarda el diagrama (PostgreSQL) y lo difunde al lienzo
@@ -286,6 +292,7 @@ Base `uml_studio_ai`:
 | `chat_messages` | Cada mensaje: autor (id y nombre), texto, menciones, diagrama en el que actuó Trazo, intención (`answer`, `edit`, `propose`, `clarify`, `vision`), operaciones propuestas o aplicadas, estado de la propuesta y quién la aplicó, modelo, latencia y tokens |
 | `canvas_activity` | **Quién hizo qué** en cada lienzo: persona (o «Trazo a pedido de X»), diagrama, cada cambio (clases, atributos, métodos y relaciones creados, cambiados o quitados, con su hora) y un resumen legible. Los cambios seguidos de la misma persona en el mismo diagrama durante 15 minutos se suman en una entrada; crear y luego borrar algo se anula |
 | `project_presence` | Cuándo dejó cada persona el proyecto por última vez, para «¿qué hubo desde mi última conexión?» |
+| `trazo_settings` | Cómo trabaja Trazo en cada proyecto («Configurar Trazo»): entrega, estilo, creatividad, modelo y quién lo cambió por última vez |
 
 Cada petición envía al modelo: la instrucción de mentor, el resumen de la conversación, los últimos 12 mensajes (cada uno con el nombre de su autor), quién está conectado y con qué permiso, el diagrama actual en texto compacto y el mensaje nuevo. Cuando se acumulan más de 24 mensajes sin resumir, los más antiguos se resumen en segundo plano.
 
@@ -297,6 +304,19 @@ Con eso Trazo responde, siempre a pedido:
 
 - **Revisión dirigida**: «@Trazo revisa lo que hizo Marco» trabaja sobre el lienzo donde trabajó Marco, revisa solo sus cambios, nombra al autor y, si hay mejoras, deja una propuesta. Al pedir una revisión el sistema añade observaciones verificadas que un modelo de 7B suele pasar por alto: atributos que repiten una relación (`codigoProveedor` junto a la relación con `Proveedor`), clases sin `id` y dinero en `Double`.
 - **Puesta al día**: «¿qué hizo Ana?», «¿qué han avanzado?» o «ponme al día» resumen la actividad por persona y diagrama; «desde mi última conexión» cuenta solo los cambios posteriores a la última vez que esa persona dejó el proyecto.
+
+### Configurar Trazo
+
+Cada proyecto decide cómo trabaja Trazo; lo cambian los editores y el administrador desde el chat (los lectores lo ven). Trazo sigue actuando **solo cuando le hablan**: esto cambia cómo responde, no cuándo.
+
+| Ajuste | Opciones |
+| --- | --- |
+| Cuando le piden cambios | **Aplica** los cambios (por defecto) · **Siempre propone**: deja una propuesta y alguien pulsa «Aplicar» · **Solo explica**: modo didáctico, explica cómo hacerlo sin tocar el diagrama |
+| Estilo | **Breve y directo** (1 a 3 frases) · **Mentor** (por defecto): explica el porqué con el propio diagrama y hace preguntas |
+| Creatividad | Temperatura del modelo: precisa 0,05 · equilibrada 0,2 (por defecto) · creativa 0,6 |
+| Modelo | `OLLAMA_MODEL` y los de `AI_MODELS` |
+
+El orquestador hace cumplir la entrega aunque el modelo no la siga: en «Siempre propone» un cambio nunca se aplica, y en «Solo explica» nunca se aplica ni se propone; si el texto del modelo dijera lo contrario («listo, creé…»), lo reescribe con los pasos reales. Cada cambio de configuración lo anuncia Trazo en el canal del equipo («Ana cambió cómo trabajo en este proyecto: ahora dejo los cambios como propuesta…»), así queda en el historial y en su propio contexto.
 
 ## Estructura
 

@@ -6,6 +6,8 @@ import {
   AiGenerateResult,
   AiProvider,
   AiProviderUnavailableError,
+  selectableModels,
+  temperatureOf,
 } from './ai-provider';
 
 const DEFAULT_MODEL = 'gemini-3.8-flash';
@@ -26,7 +28,9 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export class GeminiProvider implements AiProvider {
   private readonly logger = new Logger(GeminiProvider.name);
   private readonly client: GoogleGenAI;
-  private readonly models: string[];
+  /** Principal y, si lo hay, el de respaldo cuando el principal está saturado. */
+  private readonly chain: string[];
+  private readonly selectable: string[];
   private readonly timeoutMs: number;
 
   constructor(config: ConfigService) {
@@ -48,14 +52,19 @@ export class GeminiProvider implements AiProvider {
 
     const primary = config.get<string>('GEMINI_MODEL') || DEFAULT_MODEL;
     const fallback = config.get<string>('GEMINI_FALLBACK_MODEL');
-    this.models =
+    this.chain =
       fallback && fallback !== primary ? [primary, fallback] : [primary];
+    this.selectable = selectableModels(config, primary);
     this.timeoutMs =
       Number(config.get<string>('AI_TIMEOUT_MS')) || DEFAULT_TIMEOUT_MS;
 
     this.logger.log(
-      `Gemini listo (${useVertex ? 'Vertex AI' : 'Google AI Studio'}), modelos: ${this.models.join(' → ')}`,
+      `Gemini listo (${useVertex ? 'Vertex AI' : 'Google AI Studio'}), modelos: ${this.chain.join(' → ')}`,
     );
+  }
+
+  models(): string[] {
+    return this.selectable;
   }
 
   async generate(request: AiGenerateRequest): Promise<AiGenerateResult> {
@@ -68,7 +77,15 @@ export class GeminiProvider implements AiProvider {
     ];
 
     let lastError: unknown;
-    for (const model of this.models) {
+    // El modelo elegido por el equipo va primero; los demás de la cadena quedan de respaldo
+    const chosen =
+      request.model && this.selectable.includes(request.model)
+        ? request.model
+        : undefined;
+    const models = chosen
+      ? [chosen, ...this.chain.filter((m) => m !== chosen)]
+      : this.chain;
+    for (const model of models) {
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         try {
           const started = Date.now();
@@ -77,6 +94,7 @@ export class GeminiProvider implements AiProvider {
             contents,
             config: {
               systemInstruction: request.systemInstruction,
+              temperature: temperatureOf(request),
               ...(request.json ? { responseMimeType: 'application/json' } : {}),
               abortSignal: AbortSignal.timeout(this.timeoutMs),
             },

@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Body,
   Param,
   ParseEnumPipe,
@@ -32,6 +33,10 @@ import {
   SendChatMessageDto,
 } from '../dtos/ai-chat.dto';
 import type { ChatChannel } from '../conversation/ai-conversation.schema';
+import {
+  TrazoSettingsDto,
+  UpdateTrazoSettingsDto,
+} from '../dtos/trazo-settings.dto';
 
 enum ChannelParam {
   team = 'team',
@@ -108,6 +113,38 @@ export class AiAssistantController {
       user,
     );
     return { status: result ? 'queued' : 'sent', message };
+  }
+
+  @Get('projects/:projectId/trazo-settings')
+  @SkipThrottle()
+  @ApiOperation({
+    summary:
+      'Configuración de Trazo del proyecto: cómo entrega los cambios, estilo y modelo',
+  })
+  @ApiResponse({ status: 200, type: TrazoSettingsDto })
+  async getTrazoSettings(
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @CurrentUser() user: User,
+  ): Promise<TrazoSettingsDto> {
+    return this.aiAssistantService.getTrazoSettings(projectId, user);
+  }
+
+  @Put('projects/:projectId/trazo-settings')
+  @Throttle({ default: CHAT_LIMIT })
+  @ApiOperation({
+    summary: 'Cambia la configuración de Trazo del proyecto',
+    description:
+      'Solo editores y administrador. Trazo anuncia el cambio en el canal del equipo y los paneles abiertos lo reciben por Socket.IO (evento trazo_settings). Trazo sigue actuando solo cuando le hablan.',
+  })
+  @ApiResponse({ status: 200, type: TrazoSettingsDto })
+  @ApiResponse({ status: 400, description: 'Modelo no disponible' })
+  @ApiResponse({ status: 403, description: 'Solo lectura' })
+  async updateTrazoSettings(
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Body() dto: UpdateTrazoSettingsDto,
+    @CurrentUser() user: User,
+  ): Promise<TrazoSettingsDto> {
+    return this.aiAssistantService.updateTrazoSettings(projectId, dto, user);
   }
 
   @Post('chat/messages/:messageId/apply')

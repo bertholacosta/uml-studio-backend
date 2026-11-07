@@ -1,5 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConflictException, ForbiddenException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { AiAssistantService, ChatUser } from './ai-assistant.service';
 import {
   AI_PROVIDER,
@@ -11,6 +15,11 @@ import { ProjectAccessService } from '../../projects/services/project-access.ser
 import { DiagramService } from '../../diagrams/services/diagram.service';
 import { AiConversationService } from '../conversation/ai-conversation.service';
 import { ActivityService } from '../../activity/activity.service';
+import { TrazoSettingsService } from '../settings/trazo-settings.service';
+import {
+  DEFAULT_TRAZO_SETTINGS,
+  TrazoSettingsValues,
+} from '../settings/trazo-settings';
 import { AiPromptDto } from '../dtos/ai-request.dto';
 import { findNodeFuzzy } from '../domain/node-matching';
 import { resolveManyToManyRelationships } from '../domain/many-to-many.resolver';
@@ -78,7 +87,11 @@ class FakeConversations {
 
 describe('AiAssistantService', () => {
   let service: AiAssistantService;
-  let aiProvider: { generate: jest.Mock };
+  let aiProvider: { generate: jest.Mock; models: jest.Mock };
+  let settings: { get: jest.Mock; save: jest.Mock };
+  /** Configuración del proyecto que verá el próximo turno de Trazo. */
+  const configure = (values: Partial<TrazoSettingsValues>) =>
+    settings.get.mockResolvedValue({ ...DEFAULT_TRAZO_SETTINGS, ...values });
   let access: {
     assertProjectAccess: jest.Mock;
     assertDiagramAccess: jest.Mock;
@@ -117,7 +130,18 @@ describe('AiAssistantService', () => {
     service.processTextPrompt(dto, user);
 
   beforeEach(async () => {
-    aiProvider = { generate: jest.fn() };
+    aiProvider = {
+      generate: jest.fn(),
+      models: jest.fn().mockReturnValue(['trazo', 'qwen2.5-coder:7b']),
+    };
+    settings = {
+      get: jest.fn().mockResolvedValue({ ...DEFAULT_TRAZO_SETTINGS }),
+      save: jest.fn(async (_projectId: string, values: any, by: any) => ({
+        ...values,
+        updatedBy: by,
+        updatedAt: new Date('2026-11-06T12:00:00Z'),
+      })),
+    };
     access = {
       assertProjectAccess: jest.fn().mockResolvedValue('EDITOR'),
       assertDiagramAccess: jest.fn().mockResolvedValue('EDITOR'),
@@ -167,6 +191,7 @@ describe('AiAssistantService', () => {
         { provide: DiagramService, useValue: diagrams },
         { provide: AiConversationService, useValue: conversations },
         { provide: ActivityService, useValue: activity },
+        { provide: TrazoSettingsService, useValue: settings },
       ],
     }).compile();
 
@@ -1000,6 +1025,180 @@ describe('AiAssistantService', () => {
         proposal: { state: 'pending' },
         diagramId: 'diag-123',
         diagramName: 'Ventas',
+      });
+    });
+
+    describe('configuración del proyecto («Configurar Trazo»)', () => {
+      const editReply = JSON.stringify({
+        reply: 'Ana, creé Pago.',
+        intent: 'edit',
+        changesSummary: 'Clase Pago',
+        operations: [
+          { op: 'add_class', name: 'Pago', attributes: [], methods: [] },
+        ],
+      });
+
+      it('en «siempre propone» deja el cambio como propuesta aunque el modelo lo aplique', async () => {
+        configure({ delivery: 'propose' });
+        mockModelResponse(editReply);
+        const result = await run(baseDto);
+
+        expect(result.action).toBe('proposal');
+        expect(diagrams.saveAst).not.toHaveBeenCalled();
+        expect(collaborationGateway.broadcastAiMutation).not.toHaveBeenCalled();
+        expect(conversations.messages[1]).toMatchObject({
+          intent: 'propose',
+          proposal: { state: 'pending' },
+        });
+        // El modelo dijo «creé Pago»: el texto lo corrige el orquestador
+        expect(conversations.messages[1].text).toBe(
+          'Ana, te dejo la propuesta para que el equipo la revise antes de aplicarla: Clase Pago. Cualquier editor puede pulsar «Aplicar».',
+        );
+        const prompt = aiProvider.generate.mock.calls[0][0].parts[0].text;
+        expect(prompt).toContain('NUNCA uses "edit"');
+      });
+
+      it('en «solo explica» no toca el diagrama ni deja propuestas', async () => {
+        configure({ delivery: 'explain' });
+        mockModelResponse(editReply);
+        const result = await run(baseDto);
+
+        expect(result.action).toBe('answer');
+        expect(diagrams.saveAst).not.toHaveBeenCalled();
+        expect(conversations.messages[1].intent).toBe('answer');
+        expect(conversations.messages[1].proposal).toBeUndefined();
+        expect(conversations.messages[1].text).toBe(
+          'Ana, en este proyecto solo explico, sin tocar el diagrama. Para hacerlo en el editor: crea la clase Pago.',
+        );
+      });
+
+      it('en «solo explica» no vacía el diagrama sin preguntar al modelo', async () => {
+        configure({ delivery: 'explain' });
+        mockModelResponse(
+          JSON.stringify({
+            reply: 'Ana, para vaciarlo selecciona todo y pulsa Suprimir.',
+            intent: 'answer',
+            operations: [],
+          }),
+        );
+        const result = await run({
+          ...baseDto,
+          prompt: 'elimina todas las tablas',
+        });
+
+        expect(result.action).toBe('answer');
+        expect(aiProvider.generate).toHaveBeenCalled();
+        expect(diagrams.saveAst).not.toHaveBeenCalled();
+      });
+
+      it('pasa al modelo el estilo, la creatividad y el modelo elegidos', async () => {
+        configure({
+          style: 'brief',
+          creativity: 'creative',
+          model: 'qwen2.5-coder:7b',
+        });
+        mockModelResponse(
+          JSON.stringify({
+            reply: 'Ana, ok',
+            intent: 'answer',
+            operations: [],
+          }),
+        );
+        await run({ ...baseDto, prompt: '¿qué es una composición?' });
+
+        const request = aiProvider.generate.mock.calls[0][0];
+        expect(request).toMatchObject({
+          temperature: 0.6,
+          model: 'qwen2.5-coder:7b',
+        });
+        expect(request.parts[0].text).toContain('1 a 3 frases');
+      });
+
+      it('devuelve la configuración predeterminada con los modelos disponibles', async () => {
+        access.assertProjectAccess.mockResolvedValueOnce('VIEWER');
+        await expect(service.getTrazoSettings('proj-1', ana)).resolves.toEqual({
+          delivery: 'apply',
+          style: 'mentor',
+          creativity: 'balanced',
+          model: 'trazo',
+          models: ['trazo', 'qwen2.5-coder:7b'],
+          canEdit: false,
+        });
+      });
+
+      it('un cambio se guarda, Trazo lo anuncia en el canal del equipo y llega a todos', async () => {
+        const result = await service.updateTrazoSettings(
+          'proj-1',
+          {
+            delivery: 'propose',
+            style: 'brief',
+            creativity: 'balanced',
+            model: 'trazo',
+          },
+          ana,
+        );
+
+        expect(access.assertProjectAccess).toHaveBeenCalledWith(
+          'proj-1',
+          'user-1',
+          'write',
+        );
+        // El modelo predeterminado no se guarda
+        expect(settings.save).toHaveBeenCalledWith(
+          'proj-1',
+          { delivery: 'propose', style: 'brief', creativity: 'balanced' },
+          { userId: 'user-1', userName: 'Ana Pérez' },
+        );
+        expect(result).toMatchObject({ delivery: 'propose', canEdit: true });
+        expect(conversations.messages).toEqual([
+          expect.objectContaining({
+            channel: 'team',
+            role: 'assistant',
+            text: expect.stringContaining(
+              'Ana Pérez cambió cómo trabajo en este proyecto: ahora dejo los cambios como propuesta',
+            ),
+          }),
+        ]);
+        expect(collaborationGateway.emitToProject).toHaveBeenCalledWith(
+          'proj-1',
+          'trazo_settings',
+          expect.objectContaining({ delivery: 'propose', style: 'brief' }),
+        );
+      });
+
+      it('sin cambios no guarda ni anuncia nada', async () => {
+        await service.updateTrazoSettings(
+          'proj-1',
+          { ...DEFAULT_TRAZO_SETTINGS, model: 'trazo' },
+          ana,
+        );
+        expect(settings.save).not.toHaveBeenCalled();
+        expect(conversations.messages).toHaveLength(0);
+      });
+
+      it('rechaza un modelo que el servidor no ofrece', async () => {
+        await expect(
+          service.updateTrazoSettings(
+            'proj-1',
+            { ...DEFAULT_TRAZO_SETTINGS, model: 'gpt-x' },
+            ana,
+          ),
+        ).rejects.toThrow(BadRequestException);
+        expect(settings.save).not.toHaveBeenCalled();
+      });
+
+      it('quien solo puede ver no la cambia', async () => {
+        access.assertProjectAccess.mockRejectedValueOnce(
+          new ForbiddenException(),
+        );
+        await expect(
+          service.updateTrazoSettings(
+            'proj-1',
+            { ...DEFAULT_TRAZO_SETTINGS, delivery: 'explain' },
+            ana,
+          ),
+        ).rejects.toThrow(ForbiddenException);
+        expect(settings.save).not.toHaveBeenCalled();
       });
     });
 

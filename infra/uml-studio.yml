@@ -426,6 +426,13 @@ Resources:
       Name: !Sub '/${AppName}/OLLAMA_MODEL'
       Type: String
       Value: trazo
+  AiModelsParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${AppName}/AI_MODELS'
+      Type: String
+      # Otros modelos que se pueden elegir en «Configurar Trazo» (el modelo base de trazo ya está en Modal)
+      Value: qwen2.5-coder:7b
   AiTimeoutParam:
     Type: AWS::SSM::Parameter
     Properties:

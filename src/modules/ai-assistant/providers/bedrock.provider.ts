@@ -11,6 +11,8 @@ import {
   AiGenerateResult,
   AiProvider,
   AiProviderUnavailableError,
+  selectableModels,
+  temperatureOf,
 } from './ai-provider';
 
 const DEFAULT_MODEL = 'qwen.qwen3-32b-v1:0';
@@ -37,6 +39,7 @@ export class BedrockProvider implements AiProvider {
   private readonly logger = new Logger(BedrockProvider.name);
   private readonly client: BedrockRuntimeClient;
   private readonly model: string;
+  private readonly selectable: string[];
   private readonly timeoutMs: number;
 
   constructor(config: ConfigService) {
@@ -45,6 +48,7 @@ export class BedrockProvider implements AiProvider {
       config.get<string>('AWS_REGION') ||
       DEFAULT_REGION;
     this.model = config.get<string>('BEDROCK_MODEL_ID') || DEFAULT_MODEL;
+    this.selectable = selectableModels(config, this.model);
     this.timeoutMs =
       Number(config.get<string>('AI_TIMEOUT_MS')) || DEFAULT_TIMEOUT_MS;
     this.client = new BedrockRuntimeClient({ region });
@@ -52,7 +56,15 @@ export class BedrockProvider implements AiProvider {
     this.logger.log(`Bedrock en ${region}, modelo: ${this.model}`);
   }
 
+  models(): string[] {
+    return this.selectable;
+  }
+
   async generate(request: AiGenerateRequest): Promise<AiGenerateResult> {
+    const model =
+      request.model && this.selectable.includes(request.model)
+        ? request.model
+        : this.model;
     const content = request.parts.map((part): ContentBlock => {
       if ('text' in part) return { text: part.text };
       return {
@@ -74,11 +86,11 @@ export class BedrockProvider implements AiProvider {
     try {
       const response = await this.client.send(
         new ConverseCommand({
-          modelId: this.model,
+          modelId: model,
           system: [{ text: request.systemInstruction }],
           messages,
           inferenceConfig: {
-            temperature: request.json ? 0.2 : 0.4,
+            temperature: temperatureOf(request),
             maxTokens: MAX_OUTPUT_TOKENS,
           },
         }),
@@ -91,11 +103,11 @@ export class BedrockProvider implements AiProvider {
         .trim();
       const latencyMs = Date.now() - started;
       this.logger.log(
-        `${this.model} respondió en ${latencyMs} ms (${response.usage?.inputTokens ?? '?'} → ${response.usage?.outputTokens ?? '?'} tokens)`,
+        `${model} respondió en ${latencyMs} ms (${response.usage?.inputTokens ?? '?'} → ${response.usage?.outputTokens ?? '?'} tokens)`,
       );
       return {
         text,
-        model: this.model,
+        model,
         latencyMs,
         usage: {
           inputTokens: response.usage?.inputTokens,
@@ -115,7 +127,7 @@ export class BedrockProvider implements AiProvider {
       }
       if (error?.name === 'AccessDeniedException') {
         throw new Error(
-          `Bedrock rechazó el acceso al modelo ${this.model}: revisa la clave de API (AWS_BEARER_TOKEN_BEDROCK) o los permisos de la cuenta. ${error?.message || ''}`,
+          `Bedrock rechazó el acceso al modelo ${model}: revisa la clave de API (AWS_BEARER_TOKEN_BEDROCK) o los permisos de la cuenta. ${error?.message || ''}`,
         );
       }
       throw error;

@@ -5,12 +5,16 @@ import {
   AiGenerateResult,
   AiProvider,
   AiProviderUnavailableError,
+  selectableModels,
+  temperatureOf,
 } from './ai-provider';
 
 const DEFAULT_BASE_URL = 'http://localhost:11434';
 const DEFAULT_MODEL = 'trazo';
 // Un modelo propio tarda más que una API en la nube, sobre todo si su servidor estaba apagado
 const DEFAULT_TIMEOUT_MS = 180_000;
+// La del Modelfile de trazo; un modelo base (otro de AI_MODELS) traería una menor y cortaría el prompt
+const DEFAULT_NUM_CTX = 8192;
 
 interface OllamaChatResponse {
   model: string;
@@ -33,10 +37,11 @@ export class OllamaProvider implements AiProvider {
   private readonly logger = new Logger(OllamaProvider.name);
   private readonly baseUrl: string;
   private readonly model: string;
+  private readonly selectable: string[];
   private readonly visionModel?: string;
   private readonly authHeaders: Record<string, string>;
   private readonly timeoutMs: number;
-  private readonly numCtx?: number;
+  private readonly numCtx: number;
   private readonly keepAlive: string;
   private readonly think?: boolean;
 
@@ -45,6 +50,7 @@ export class OllamaProvider implements AiProvider {
       config.get<string>('OLLAMA_BASE_URL') || DEFAULT_BASE_URL
     ).replace(/\/+$/, '');
     this.model = config.get<string>('OLLAMA_MODEL') || DEFAULT_MODEL;
+    this.selectable = selectableModels(config, this.model);
     this.visionModel = config.get<string>('OLLAMA_VISION_MODEL') || undefined;
     const apiKey = config.get<string>('OLLAMA_API_KEY');
     const modalKey = config.get<string>('MODAL_KEY');
@@ -59,7 +65,8 @@ export class OllamaProvider implements AiProvider {
     };
     this.timeoutMs =
       Number(config.get<string>('AI_TIMEOUT_MS')) || DEFAULT_TIMEOUT_MS;
-    this.numCtx = Number(config.get<string>('OLLAMA_NUM_CTX')) || undefined;
+    this.numCtx =
+      Number(config.get<string>('OLLAMA_NUM_CTX')) || DEFAULT_NUM_CTX;
     // Mantiene el modelo cargado en la GPU entre preguntas
     this.keepAlive = config.get<string>('OLLAMA_KEEP_ALIVE') || '30m';
     const think = config.get<string>('OLLAMA_THINK');
@@ -68,6 +75,10 @@ export class OllamaProvider implements AiProvider {
     this.logger.log(
       `Ollama en ${this.baseUrl}, modelo: ${this.model}${this.visionModel ? `, visión: ${this.visionModel}` : ''}`,
     );
+  }
+
+  models(): string[] {
+    return this.selectable;
   }
 
   async generate(request: AiGenerateRequest): Promise<AiGenerateResult> {
@@ -83,7 +94,11 @@ export class OllamaProvider implements AiProvider {
         'El modelo local no lee imágenes: define OLLAMA_VISION_MODEL o AI_VISION_PROVIDER=gemini',
       );
     }
-    const model = images.length ? this.visionModel! : this.model;
+    const model = images.length
+      ? this.visionModel!
+      : request.model && this.selectable.includes(request.model)
+        ? request.model
+        : this.model;
 
     const body = {
       model,
@@ -108,8 +123,8 @@ export class OllamaProvider implements AiProvider {
           : {}),
       ...(this.think === undefined ? {} : { think: this.think }),
       options: {
-        temperature: request.json ? 0.2 : 0.4,
-        ...(this.numCtx ? { num_ctx: this.numCtx } : {}),
+        temperature: temperatureOf(request),
+        num_ctx: this.numCtx,
       },
     };
 

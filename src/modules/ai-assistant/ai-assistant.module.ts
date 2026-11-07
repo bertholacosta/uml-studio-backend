@@ -19,6 +19,11 @@ import {
   AiMessageSchema,
 } from './conversation/ai-conversation.schema';
 import { AiConversationService } from './conversation/ai-conversation.service';
+import {
+  TrazoSettings,
+  TrazoSettingsSchema,
+} from './settings/trazo-settings.schema';
+import { TrazoSettingsService } from './settings/trazo-settings.service';
 import { AiAssistantService } from './services/ai-assistant.service';
 import { AiAssistantController } from './controllers/ai-assistant.controller';
 
@@ -53,6 +58,7 @@ function providerName(
     MongooseModule.forFeature([
       { name: AiConversation.name, schema: AiConversationSchema },
       { name: AiMessage.name, schema: AiMessageSchema },
+      { name: TrazoSettings.name, schema: TrazoSettingsSchema },
     ]),
   ],
   controllers: [AiAssistantController],
@@ -82,6 +88,7 @@ function providerName(
       },
     },
     AiConversationService,
+    TrazoSettingsService,
     AiAssistantService,
   ],
 })

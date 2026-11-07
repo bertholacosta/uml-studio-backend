@@ -1,6 +1,11 @@
 import { UmlClassNode, UmlConnection } from '../domain/uml-diagram.types';
 import { describeDiagram } from './uml.prompts';
 import { TargetReason, diagramTag } from '../domain/diagram-target';
+import {
+  DEFAULT_TRAZO_SETTINGS,
+  settingsRules,
+  type TrazoSettingsValues,
+} from '../settings/trazo-settings';
 
 /**
  * Trazo en la pizarra compartida: desarrollador senior y mentor que conversa con todo el
@@ -26,11 +31,11 @@ CÓMO CONVERSAS:
 - Mantén el hilo de todo el equipo: si alguien se refiere a algo que dijo otra persona, úsalo y nómbrala ("como propuso Luis...").
 - Como mentor, explica el porqué con ejemplos del propio diagrama: conceptos UML (atributo derivado, agregación vs. composición, generalización, clase de asociación, multiplicidades) y su impacto en JPA/Spring Boot.
 - Si dos personas piden cosas contradictorias, señala el conflicto y propón una solución en vez de elegir en silencio.
-- Español claro y directo. Respuestas cortas (unas 120 palabras) salvo que pidan una explicación detallada. Sin saludos de relleno.
+- Español claro y directo, sin saludos de relleno. La longitud y el tono los marca la sección CÓMO TRABAJAS EN ESTE PROYECTO; si piden una explicación detallada, dásela.
 - Habla solo de lo que ves en el DIAGRAMA ACTUAL; no inventes clases ni atributos que no existan.
 - En una lluvia de ideas ("¿qué podríamos construir aquí?"), da ideas concretas y deja sus operaciones como "propose" para que el equipo las vea y las aplique en la pizarra.
 
-QUÉ HACES CON CADA MENSAJE ("intent"):
+QUÉ HACES CON CADA MENSAJE ("intent"; si CÓMO TRABAJAS EN ESTE PROYECTO dice otra cosa, manda ella):
 - "answer": preguntas conceptuales, dudas o comentarios. "operations": [].
 - "edit": la persona PIDE CAMBIAR el diagrama (crea, agrega, elimina, renombra, relaciona, cambia un tipo...) y PUEDE EDITAR. Devuelve las operaciones mínimas: el sistema las aplica al momento.
 - "propose": piden consejo o revisión ("¿cómo lo modelarías?", "revisa el diagrama", "¿qué le falta?") y hay mejoras concretas; o la persona pide un cambio pero es de SOLO LECTURA. Explica la propuesta y pon sus operaciones en "operations": NO se aplican hasta que alguien con permiso pulse «Aplicar».
@@ -228,6 +233,8 @@ export interface MentorTurnContext {
   activity?: string;
   /** Problemas del diagrama detectados por el sistema, cuando piden una revisión. */
   findings?: string[];
+  /** Configuración de Trazo del proyecto (cómo entrega y con qué estilo responde). */
+  settings?: TrazoSettingsValues;
   nodes: UmlClassNode[];
   connections: UmlConnection[];
 }
@@ -335,6 +342,8 @@ ${ctx.findings.map((f) => `- ${f}`).join('\n')}`
   }DIAGRAMAS DEL PROYECTO: ${diagrams}
 CONECTADOS AHORA: ${people}
 DÓNDE: ${channel}
+
+${settingsRules(ctx.settings || DEFAULT_TRAZO_SETTINGS)}
 ${ctx.activity ? `\n${ctx.activity}\n` : ''}
 ${canvas}
 

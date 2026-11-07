@@ -1,3 +1,5 @@
+import { ConfigService } from '@nestjs/config';
+
 /**
  * Contrato común de los proveedores de IA de Trazo.
  *
@@ -27,6 +29,10 @@ export interface AiGenerateRequest {
   json?: boolean;
   /** Esquema JSON que debe cumplir la respuesta (salida estructurada), si el proveedor lo admite. */
   schema?: Record<string, unknown>;
+  /** Temperatura (creatividad); por defecto 0,2 para JSON y 0,4 para texto. */
+  temperature?: number;
+  /** Modelo elegido por el equipo; se ignora si no está entre los de models(). */
+  model?: string;
 }
 
 export interface AiGenerateResult {
@@ -38,6 +44,28 @@ export interface AiGenerateResult {
 
 export interface AiProvider {
   generate(request: AiGenerateRequest): Promise<AiGenerateResult>;
+  /** Modelos que el equipo puede elegir en «Configurar Trazo»; el primero es el predeterminado. */
+  models(): string[];
+}
+
+/** Temperatura de una petición: la pedida o la de siempre según el tipo de respuesta. */
+export function temperatureOf(request: AiGenerateRequest): number {
+  return request.temperature ?? (request.json ? 0.2 : 0.4);
+}
+
+/**
+ * Modelos elegibles: el principal del proveedor y los de AI_MODELS (separados por comas), que
+ * deben existir en el servidor (p. ej. trazo,qwen2.5-coder:7b en Ollama).
+ */
+export function selectableModels(
+  config: ConfigService,
+  primary: string,
+): string[] {
+  const extra = (config.get<string>('AI_MODELS') || '')
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
+  return [...new Set([primary, ...extra])];
 }
 
 /** El proveedor está saturado o no responde a tiempo: conviene reintentar más tarde. */
