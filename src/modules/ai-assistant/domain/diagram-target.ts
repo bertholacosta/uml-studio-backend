@@ -8,11 +8,12 @@ export interface DiagramRef {
 }
 
 /**
- * Por qué se eligió el lienzo: tag (#Ventas en el mensaje), open (lo tiene abierto quien
- * escribe), classes (solo ese diagrama tiene las clases que menciona), thread (el último con
+ * Por qué se eligió el lienzo: tag (#Ventas en el mensaje), activity (es donde trabajó la
+ * persona de cuyo trabajo se habla), open (lo tiene abierto quien escribe), classes (solo ese diagrama tiene las clases que menciona), thread (el último con
  * el que trabajó Trazo en la conversación) u only (el proyecto tiene un único diagrama).
  */
-export type TargetReason = 'tag' | 'open' | 'classes' | 'thread' | 'only';
+export type TargetReason =
+  'tag' | 'activity' | 'open' | 'classes' | 'thread' | 'only';
 
 export interface DiagramTarget {
   diagram: DiagramRef;
@@ -28,20 +29,28 @@ export function diagramTag(name: string): string {
 }
 
 /**
- * Decide sobre qué diagrama trabaja Trazo: primero el que se marca con #, después el que tiene
+ * Decide sobre qué diagrama trabaja Trazo: primero el que se marca con #, después aquel en el
+ * que trabajó la persona de la que se habla («revisa lo que hizo Marco»), el que tiene
  * abierto quien escribe, el único que contiene las clases mencionadas, el último del hilo o el
  * único del proyecto. Si nada lo deja claro devuelve null y Trazo pregunta.
  */
 export function resolveDiagramTarget(
   text: string,
   diagrams: DiagramRef[],
-  hints: { activeDiagramId?: string; threadDiagramId?: string } = {},
+  hints: {
+    activeDiagramId?: string;
+    threadDiagramId?: string;
+    activityDiagramId?: string;
+  } = {},
 ): DiagramTarget | null {
   for (const [, token] of text.matchAll(TAG)) {
     const wanted = normalizeForFuzzy(token);
     const tagged = diagrams.find((d) => normalizeForFuzzy(d.name) === wanted);
     if (tagged) return { diagram: tagged, reason: 'tag' };
   }
+
+  const worked = diagrams.find((d) => d.id === hints.activityDiagramId);
+  if (worked) return { diagram: worked, reason: 'activity' };
 
   const open = diagrams.find((d) => d.id === hints.activeDiagramId);
   if (open) return { diagram: open, reason: 'open' };

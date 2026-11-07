@@ -42,8 +42,17 @@ import {
   buildMentorInstruction,
   buildMentorPrompt,
   buildSummaryPrompt,
+  describeActivity,
   formatUserTurn,
+  timeAgo,
 } from '../prompts/mentor.prompts';
+import {
+  ActivityFocus,
+  ProjectMember,
+  activityFocus,
+} from '../domain/activity-focus';
+import { ActivityService } from '../../activity/activity.service';
+import { CanvasActivityDocument } from '../../activity/canvas-activity.schema';
 import { UmlClassNode, UmlConnection } from '../domain/uml-diagram.types';
 import { findNodeFuzzy, normalizeForFuzzy } from '../domain/node-matching';
 import { mergeNodesAndConnections } from '../domain/diagram-merger';
@@ -54,6 +63,7 @@ import {
   fixUnrequestedManyToMany,
 } from '../domain/diagram-operations';
 import { resolveManyToManyRelationships } from '../domain/many-to-many.resolver';
+import { reviewFindings } from '../domain/model-review';
 import {
   parseModelJson,
   sanitizeConnections,
@@ -95,7 +105,11 @@ interface Canvas {
   diagrams: DiagramRef[];
   nodes: UmlClassNode[];
   connections: UmlConnection[];
+  /** Sección de actividad del prompt (quién hizo qué), si viene al caso. */
+  activity?: string;
 }
+
+const DAY_MS = 24 * 60 * 60_000;
 
 const TRAZO: ChatAuthor = { userId: AI_USER_ID, userName: AI_USER_NAME };
 const TRAZO_MENTION = /(^|[^\p{L}\d_])@trazo\b/iu;
@@ -111,6 +125,9 @@ const DELETE_ALL = [
   /^(?:delete\s+all(?:\s+tables)?|clear\s+diagram)$/i,
 ];
 // Especificaciones técnicas concretas: con ellas nunca se pide aclaración
+// Piden una revisión: Trazo recibe además las comprobaciones automáticas del diagrama
+const REVIEW_REQUEST =
+  /(?:revis|eval[uú]a|corrig|est[aá] bien|qu[eé] (?:le )?(?:falta|sobra)|mejorar|feedback|opini[oó]n)/i;
 const STRUCTURAL_SPECS = [
   /(?:uuid|string|integer|long|double|float|boolean|bigdecimal|localdate|localdatetime|date|text|byte\[\]|:|->)/i,
   /(?:con\s+(?:atributos?|campos?|columnas?|id|nombre|name|email))/i,
@@ -157,6 +174,7 @@ export class AiAssistantService {
     private readonly access: ProjectAccessService,
     private readonly conversations: AiConversationService,
     private readonly diagrams: DiagramService,
+    private readonly activity: ActivityService,
   ) {}
 
   // --- Conversaciones ---
@@ -391,6 +409,7 @@ export class AiAssistantService {
               target: target
                 ? { name: target.diagram.name, reason: target.reason }
                 : undefined,
+              activity: canvas.activity,
               participants: this.collaborationGateway
                 .connectedUsers(conversation.projectId)
                 .map((p) => ({
@@ -400,6 +419,9 @@ export class AiAssistantService {
                     ? diagramNames.get(p.diagramId)
                     : undefined,
                 })),
+              findings: REVIEW_REQUEST.test(prompt)
+                ? reviewFindings(currentNodes, currentConnections)
+                : undefined,
               nodes: currentNodes,
               connections: currentConnections,
             }),
@@ -785,22 +807,118 @@ export class AiAssistantService {
     receivedAt: number,
     user: ChatUser,
   ): Promise<Canvas> {
-    const [diagrams, threadDiagramId] = await Promise.all([
+    const [diagrams, threadDiagramId, members] = await Promise.all([
       this.access.listProjectDiagrams(conversation.projectId),
       this.conversations.lastDiagramInThread(conversation),
+      this.access.listProjectMembers(conversation.projectId),
     ]);
+    const speaker = { userId: user.id, userName: user.fullName };
+    const focus = activityFocus(text, members, speaker);
+    const { entries, text: activity } = await this.activityFor(
+      conversation.projectId,
+      focus,
+      speaker,
+    );
     const target = resolveDiagramTarget(text, diagrams, {
       activeDiagramId: dto.activeDiagramId,
       threadDiagramId,
+      // «Revisa lo que hizo Marco»: el lienzo donde trabajó Marco por última vez
+      activityDiagramId: focus.aboutWork ? entries[0]?.diagramId : undefined,
     });
-    if (!target) return { target, diagrams, nodes: [], connections: [] };
+    if (!target) {
+      return { target, diagrams, nodes: [], connections: [], activity };
+    }
     const content = await this.loadCanvas(
       target.diagram.id,
       dto,
       receivedAt,
       user,
     );
-    return { target, diagrams, ...content };
+    return { target, diagrams, ...content, activity };
+  }
+
+  /**
+   * Qué parte del registro de actividad necesita el mensaje: el trabajo de las personas que
+   * nombra, lo que pasó desde la última conexión de quien escribe o, si no, lo más reciente.
+   */
+  private async activityFor(
+    projectId: string,
+    focus: ActivityFocus,
+    speaker: ProjectMember,
+  ): Promise<{ entries: CanvasActivityDocument[]; text?: string }> {
+    const now = new Date();
+    const daysAgo = (days: number) => new Date(now.getTime() - days * DAY_MS);
+    try {
+      let entries: CanvasActivityDocument[];
+      let title: string;
+      let note: string | undefined;
+      // Al ponerse al día, de cada entrada solo cuenta lo posterior a la última conexión
+      let since: Date | undefined;
+
+      if (focus.aboutWork) {
+        entries = await this.activity.recent(projectId, {
+          userIds: focus.people.map((p) => p.userId),
+          since: daysAgo(14),
+          limit: 12,
+        });
+        const names = focus.people
+          .map((p) =>
+            p.userId === speaker.userId
+              ? `${p.userName} (quien escribe)`
+              : p.userName,
+          )
+          .join(' y ');
+        title = `trabajo de ${names} en los últimos 14 días, incluido lo que pidió a Trazo`;
+      } else if (focus.catchUp) {
+        const lastSeen = await this.activity.lastSeen(
+          projectId,
+          speaker.userId,
+        );
+        const fromLastVisit = !!lastSeen && lastSeen > daysAgo(14);
+        since = fromLastVisit ? lastSeen : daysAgo(1);
+        entries = (
+          await this.activity.recent(projectId, { since, limit: 20 })
+        ).filter((e) => this.activity.summarySince(e, since));
+        title = fromLastVisit
+          ? `desde la última conexión de ${speaker.userName}, ${timeAgo(lastSeen, now)}`
+          : 'últimas 24 h';
+        if (!entries.length) {
+          since = undefined;
+          entries = await this.activity.recent(projectId, {
+            since: daysAgo(14),
+            limit: 5,
+          });
+          note = `No hubo cambios en ese periodo; lo de arriba es lo último registrado.`;
+        }
+      } else {
+        entries = await this.activity.recent(projectId, {
+          since: daysAgo(3),
+          limit: 5,
+        });
+        if (!entries.length) return { entries };
+        title = 'cambios recientes';
+      }
+
+      return {
+        entries,
+        text: describeActivity(
+          title,
+          entries.map((e) => ({
+            actorName: e.actor.userName,
+            diagramName: e.diagramName,
+            summary: this.activity.summarySince(e, since),
+            updatedAt: e.updatedAt,
+          })),
+          now,
+          note,
+        ),
+      };
+    } catch (err) {
+      this.logger.warn(
+        `No se pudo leer la actividad: ${(err as Error).message}`,
+      );
+      return { entries: [] };
+    }
   }
 
   /**
@@ -850,6 +968,7 @@ export class AiAssistantService {
     const actor = {
       userId: AI_USER_ID,
       userName: `${AI_USER_NAME} (a pedido de ${firstName(user.fullName)})`,
+      onBehalfOf: { userId: user.id, userName: user.fullName },
     };
     await this.diagrams.saveAst(
       diagramId,

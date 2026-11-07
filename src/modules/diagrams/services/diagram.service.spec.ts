@@ -5,6 +5,7 @@ import { DiagramService } from './diagram.service';
 import { DiagramRepository } from '../repositories/diagram.repository';
 import { ProjectAccessService } from '../../projects/services/project-access.service';
 import { CollaborationGateway } from '../../projects/gateways/collaboration.gateway';
+import { ActivityService } from '../../activity/activity.service';
 import { ProjectRole } from '../../projects/entities/project-role.enum';
 import { Diagram } from '../entities/diagram.entity';
 import { UmlNode } from '../entities/uml-node.entity';
@@ -27,6 +28,7 @@ describe('DiagramService', () => {
   };
   let manager: { delete: jest.Mock; insert: jest.Mock; update: jest.Mock };
   let gateway: { emitToProject: jest.Mock };
+  let activity: { prime: jest.Mock; record: jest.Mock };
   let dataSource: { transaction: jest.Mock };
 
   const mockUserId = '11111111-1111-1111-1111-111111111111';
@@ -89,6 +91,10 @@ describe('DiagramService', () => {
       listProjectDiagrams: jest.fn().mockResolvedValue([]),
     };
     gateway = { emitToProject: jest.fn() };
+    activity = {
+      prime: jest.fn().mockResolvedValue(undefined),
+      record: jest.fn().mockResolvedValue(null),
+    };
     manager = {
       delete: jest.fn().mockResolvedValue(undefined),
       insert: jest.fn().mockResolvedValue(undefined),
@@ -105,6 +111,7 @@ describe('DiagramService', () => {
         { provide: ProjectAccessService, useValue: access },
         { provide: DataSource, useValue: dataSource },
         { provide: CollaborationGateway, useValue: gateway },
+        { provide: ActivityService, useValue: activity },
       ],
     }).compile();
 
@@ -224,6 +231,17 @@ describe('DiagramService', () => {
       expect(manager.delete).toHaveBeenCalledWith(UmlNode, {
         diagramId: mockDiagramId,
       });
+      // Se conoce el estado anterior antes de sobrescribirlo y se apunta quién cambió qué
+      expect(activity.prime.mock.invocationCallOrder[0]).toBeLessThan(
+        dataSource.transaction.mock.invocationCallOrder[0],
+      );
+      expect(activity.record).toHaveBeenCalledWith(
+        mockDiagramId,
+        { userId: mockUserId, userName: 'Ana Pérez' },
+        expect.any(Array),
+        expect.any(Array),
+        undefined,
+      );
       // El resto del proyecto (p. ej. la app móvil) se entera del cambio
       expect(gateway.emitToProject).toHaveBeenCalledWith(
         mockProjectId,

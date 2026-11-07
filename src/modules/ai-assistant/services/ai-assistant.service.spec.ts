@@ -10,6 +10,7 @@ import { CollaborationGateway } from '../../projects/gateways/collaboration.gate
 import { ProjectAccessService } from '../../projects/services/project-access.service';
 import { DiagramService } from '../../diagrams/services/diagram.service';
 import { AiConversationService } from '../conversation/ai-conversation.service';
+import { ActivityService } from '../../activity/activity.service';
 import { AiPromptDto } from '../dtos/ai-request.dto';
 import { findNodeFuzzy } from '../domain/node-matching';
 import { resolveManyToManyRelationships } from '../domain/many-to-many.resolver';
@@ -83,7 +84,13 @@ describe('AiAssistantService', () => {
     assertDiagramAccess: jest.Mock;
     getDiagramContext: jest.Mock;
     listProjectDiagrams: jest.Mock;
+    listProjectMembers: jest.Mock;
     getProjectName: jest.Mock;
+  };
+  let activity: {
+    recent: jest.Mock;
+    lastSeen: jest.Mock;
+    summarySince: jest.Mock;
   };
   let diagrams: { findOne: jest.Mock; saveAst: jest.Mock };
   let conversations: FakeConversations;
@@ -124,7 +131,16 @@ describe('AiAssistantService', () => {
         .mockResolvedValue([
           { id: 'diag-123', name: 'Ventas', classNames: [] },
         ]),
+      listProjectMembers: jest.fn().mockResolvedValue([
+        { userId: 'user-1', userName: 'Ana Pérez' },
+        { userId: 'user-2', userName: 'Luis Rojas' },
+      ]),
       getProjectName: jest.fn().mockResolvedValue('Tienda'),
+    };
+    activity = {
+      recent: jest.fn().mockResolvedValue([]),
+      lastSeen: jest.fn().mockResolvedValue(undefined),
+      summarySince: jest.fn((entry: { summary: string }) => entry.summary),
     };
     diagrams = {
       findOne: jest.fn().mockResolvedValue({ nodes: [], connections: [] }),
@@ -150,6 +166,7 @@ describe('AiAssistantService', () => {
         { provide: ProjectAccessService, useValue: access },
         { provide: DiagramService, useValue: diagrams },
         { provide: AiConversationService, useValue: conversations },
+        { provide: ActivityService, useValue: activity },
       ],
     }).compile();
 
@@ -1025,7 +1042,11 @@ describe('AiAssistantService', () => {
         'diag-123',
         expect.objectContaining({ nodes: expect.any(Array) }),
         'user-2',
-        { userId: 'ai_assistant', userName: 'Trazo (a pedido de Luis)' },
+        {
+          userId: 'ai_assistant',
+          userName: 'Trazo (a pedido de Luis)',
+          onBehalfOf: { userId: 'user-2', userName: 'Luis Rojas' },
+        },
       );
       expect(collaborationGateway.broadcastAiMutation).toHaveBeenCalled();
       expect(collaborationGateway.emitToProject).toHaveBeenCalledWith(
@@ -1278,7 +1299,11 @@ describe('AiAssistantService', () => {
         }),
         'user-1',
         // El aviso al proyecto dice que lo cambió Trazo a pedido de Ana
-        { userId: 'ai_assistant', userName: 'Trazo (a pedido de Ana)' },
+        {
+          userId: 'ai_assistant',
+          userName: 'Trazo (a pedido de Ana)',
+          onBehalfOf: { userId: 'user-1', userName: 'Ana Pérez' },
+        },
       );
       expect(collaborationGateway.broadcastAiMutation).toHaveBeenCalledWith(
         'diag-456',
@@ -1324,6 +1349,82 @@ describe('AiAssistantService', () => {
       );
       expect(diagrams.saveAst).not.toHaveBeenCalled();
       expect(collaborationGateway.broadcastAiMutation).not.toHaveBeenCalled();
+    });
+
+    const luisWork = (minutesAgo: number) => ({
+      diagramId: 'diag-456',
+      diagramName: 'Inventario',
+      actor: { userId: 'user-2', userName: 'Luis Rojas' },
+      summary: 'creó la clase Lote (id: UUID, vence: LocalDate)',
+      updatedAt: new Date(Date.now() - minutesAgo * 60_000),
+    });
+
+    it('revisa lo que hizo una persona en el lienzo donde trabajó', async () => {
+      access.listProjectDiagrams.mockResolvedValue(twoDiagrams);
+      activity.recent.mockResolvedValue([luisWork(25)]);
+      answer();
+      await (
+        await service.submitMessage(
+          'proj-1',
+          {
+            channel: 'team',
+            text: '@Trazo revisa lo que hizo Luis',
+            activeDiagramId: 'diag-123',
+          },
+          ana,
+        )
+      ).result;
+
+      expect(activity.recent).toHaveBeenCalledWith(
+        'proj-1',
+        expect.objectContaining({ userIds: ['user-2'] }),
+      );
+      const sent = aiProvider.generate.mock.calls[0][0].parts[0].text;
+      expect(sent).toContain('ACTIVIDAD EN LOS LIENZOS (trabajo de Luis Rojas');
+      expect(sent).toContain(
+        '- hace 25 min, Luis Rojas en #Inventario: creó la clase Lote',
+      );
+      // Aunque Ana tiene abierto Ventas, la revisión es sobre el lienzo de Luis
+      expect(sent).toContain(
+        'LIENZO: #Inventario (es donde trabajó la persona de la que se habla)',
+      );
+    });
+
+    it('pone al día con lo que pasó desde la última conexión', async () => {
+      const lastSeen = new Date(Date.now() - 3 * 60 * 60_000);
+      activity.lastSeen.mockResolvedValue(lastSeen);
+      activity.recent.mockResolvedValue([luisWork(60)]);
+      answer();
+      await (
+        await service.submitMessage(
+          'proj-1',
+          { channel: 'direct', text: '¿qué han avanzado?' },
+          ana,
+        )
+      ).result;
+
+      expect(activity.lastSeen).toHaveBeenCalledWith('proj-1', 'user-1');
+      expect(activity.recent).toHaveBeenCalledWith(
+        'proj-1',
+        expect.objectContaining({ since: lastSeen }),
+      );
+      const sent = aiProvider.generate.mock.calls[0][0].parts[0].text;
+      expect(sent).toContain(
+        'ACTIVIDAD EN LOS LIENZOS (desde la última conexión de Ana Pérez, hace 3 h',
+      );
+    });
+
+    it('sin actividad reciente no añade la sección al prompt', async () => {
+      answer();
+      await (
+        await service.submitMessage(
+          'proj-1',
+          { channel: 'team', text: '@Trazo ¿qué es una composición?' },
+          ana,
+        )
+      ).result;
+      const sent = aiProvider.generate.mock.calls[0][0].parts[0].text;
+      expect(sent).not.toContain('ACTIVIDAD EN LOS LIENZOS');
     });
 
     it('solo el administrador puede reiniciar el canal del equipo', async () => {

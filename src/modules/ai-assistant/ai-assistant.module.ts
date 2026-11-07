@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ProjectsModule } from '../projects/projects.module';
 import { DiagramsModule } from '../diagrams/diagrams.module';
+import { ActivityModule } from '../activity/activity.module';
 import {
   AI_PROVIDER,
   AI_VISION_PROVIDER,
@@ -48,6 +49,7 @@ function providerName(
   imports: [
     ProjectsModule,
     DiagramsModule,
+    ActivityModule,
     MongooseModule.forFeature([
       { name: AiConversation.name, schema: AiConversationSchema },
       { name: AiMessage.name, schema: AiMessageSchema },

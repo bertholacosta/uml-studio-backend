@@ -117,6 +117,26 @@ export class ProjectAccessService {
     }));
   }
 
+  /** Miembros del proyecto (con su creador), para reconocer a quién se nombra en el chat. */
+  async listProjectMembers(
+    projectId: string,
+  ): Promise<{ userId: string; userName: string }[]> {
+    const rows = await this.dataSource.query<
+      { id: string; full_name: string }[]
+    >(
+      `SELECT u.id, u.full_name
+         FROM users u
+        WHERE u.id IN (
+          SELECT created_by FROM projects WHERE id = $1
+          UNION
+          SELECT user_id FROM project_members WHERE project_id = $1
+        )
+        ORDER BY u.full_name`,
+      [projectId],
+    );
+    return rows.map((r) => ({ userId: r.id, userName: r.full_name }));
+  }
+
   /** Nombre completo de una persona. */
   async getUserName(userId: string): Promise<string | undefined> {
     const [row] = await this.dataSource.query<{ full_name: string }[]>(

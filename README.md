@@ -174,6 +174,7 @@ Todas las rutas llevan el prefijo `/api` y, salvo registro, login y estado, requ
 | `GET`, `PATCH` | `/auth/me` | Ver o editar el perfil |
 | `GET`, `POST` | `/projects` | Listar o crear proyectos |
 | `GET`, `PATCH`, `DELETE` | `/projects/:id` | Ver, editar o borrar un proyecto |
+| `GET` | `/projects/:id/activity` | Quién cambió qué en los diagramas (`since`, `userId`, `limit`) y la última conexión de quien consulta |
 | `POST` | `/projects/:id/members` | Invitar a un miembro |
 | `PATCH`, `DELETE` | `/projects/:id/members/:userId` | Cambiar el rol o quitar a un miembro |
 | `POST` | `/diagrams` | Crear un diagrama |
@@ -207,6 +208,7 @@ Socket.IO en el espacio de nombres `/collaboration`, autenticado con el mismo JW
 | `chat_message` | (servidor → proyecto o persona) Mensaje nuevo o actualizado del canal del equipo o de la conversación privada |
 | `trazo_status` | (servidor → proyecto o persona) Trazo está respondiendo a alguien (`busy`, `userName`) o ha terminado |
 | `chat_reset` | (servidor → proyecto o persona) Empezó una conversación nueva |
+| `diagram_activity` | (servidor → proyecto) Se guardó un diagrama: quién lo cambió, nombre y número de clases (la app móvil lo notifica) |
 
 ## Trazo e IA local
 
@@ -259,13 +261,15 @@ Ana: «@Trazo agrega Lote en #Inventario»
 Orquestador (API en AWS)
    1. guarda y difunde el mensaje (MongoDB + Socket.IO)
    2. ¿menciona a Trazo? si no, termina aquí
-   3. elige el lienzo: #Inventario › diagrama abierto › clases mencionadas › hilo › único diagrama
+   3. elige el lienzo: #Inventario › donde trabajó la persona nombrada › diagrama abierto › clases mencionadas › hilo › único diagrama
    4. arma el contexto ─────────────────────────────────────────────► Ollama «trazo» (Modal)
         · instrucción de mentor y formato de respuesta                         │
         · resumen de la conversación (MongoDB)                                 │
         · últimos 12 mensajes, cada uno con el nombre de su autor              │
         · proyecto, sus diagramas y quién está conectado y dónde               │
+        · quién cambió qué en los lienzos (canvas_activity), si viene al caso  │
         · el lienzo elegido en texto compacto (PostgreSQL o la sala)           │
+        · si piden una revisión, los problemas que detecta el sistema          │
         · el mensaje y quién lo escribe (y si puede editar)                    │
    5. ◄────────────────────────────── JSON: respuesta + operaciones ──────────┘
    6. aplica las operaciones, guarda el diagrama (PostgreSQL) y lo difunde al lienzo
@@ -280,8 +284,19 @@ Base `uml_studio_ai`:
 | --- | --- |
 | `chat_conversations` | El canal del equipo de cada proyecto y la conversación privada de cada persona con Trazo (las anteriores quedan como historial): quién la empezó, número de mensajes y el **resumen** de los mensajes antiguos |
 | `chat_messages` | Cada mensaje: autor (id y nombre), texto, menciones, diagrama en el que actuó Trazo, intención (`answer`, `edit`, `propose`, `clarify`, `vision`), operaciones propuestas o aplicadas, estado de la propuesta y quién la aplicó, modelo, latencia y tokens |
+| `canvas_activity` | **Quién hizo qué** en cada lienzo: persona (o «Trazo a pedido de X»), diagrama, cada cambio (clases, atributos, métodos y relaciones creados, cambiados o quitados, con su hora) y un resumen legible. Los cambios seguidos de la misma persona en el mismo diagrama durante 15 minutos se suman en una entrada; crear y luego borrar algo se anula |
+| `project_presence` | Cuándo dejó cada persona el proyecto por última vez, para «¿qué hubo desde mi última conexión?» |
 
 Cada petición envía al modelo: la instrucción de mentor, el resumen de la conversación, los últimos 12 mensajes (cada uno con el nombre de su autor), quién está conectado y con qué permiso, el diagrama actual en texto compacto y el mensaje nuevo. Cuando se acumulan más de 24 mensajes sin resumir, los más antiguos se resumen en segundo plano.
+
+### Quién hizo qué
+
+Cada edición que llega por `diagram_sync` se compara con el último estado conocido del diagrama y la diferencia se apunta a quien la envió; un guardado (`PUT /diagrams/:id/ast`) solo apunta lo que no llegó antes por el socket. Así, si Ana guarda un diagrama en el que también trabajó Luis, cada uno figura con lo suyo. Mover clases no cuenta como cambio.
+
+Con eso Trazo responde, siempre a pedido:
+
+- **Revisión dirigida**: «@Trazo revisa lo que hizo Marco» trabaja sobre el lienzo donde trabajó Marco, revisa solo sus cambios, nombra al autor y, si hay mejoras, deja una propuesta. Al pedir una revisión el sistema añade observaciones verificadas que un modelo de 7B suele pasar por alto: atributos que repiten una relación (`codigoProveedor` junto a la relación con `Proveedor`), clases sin `id` y dinero en `Double`.
+- **Puesta al día**: «¿qué hizo Ana?», «¿qué han avanzado?» o «ponme al día» resumen la actividad por persona y diagrama; «desde mi última conexión» cuenta solo los cambios posteriores a la última vez que esa persona dejó el proyecto.
 
 ## Estructura
 
@@ -296,6 +311,7 @@ src/
     ├── auth/               Registro, login, perfil y usuario de prueba
     ├── projects/           Proyectos, miembros, control de acceso y gateway de colaboración
     ├── diagrams/           Diagramas, clases, atributos, métodos y relaciones
+    ├── activity/           Quién hizo qué en los lienzos y última conexión de cada persona (MongoDB)
     ├── ai-assistant/       Trazo: proveedores (Ollama, Gemini), conversación en MongoDB, prompts y operaciones
     └── code-generator/     Generadores Spring Boot y Flutter (plantillas Mustache) y XMI
 ollama/                     Modelfile del modelo propio, servidor en Modal y cuaderno de Colab

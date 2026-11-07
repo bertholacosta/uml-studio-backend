@@ -14,6 +14,7 @@ import { DiagramService } from './services/diagram.service';
 import { DiagramController } from './controllers/diagram.controller';
 import { ProjectsModule } from '../projects/projects.module';
 import { AuthModule } from '../auth/auth.module';
+import { ActivityModule } from '../activity/activity.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { AuthModule } from '../auth/auth.module';
     ]),
     forwardRef(() => ProjectsModule),
     AuthModule,
+    ActivityModule,
   ],
   controllers: [DiagramController],
   providers: [

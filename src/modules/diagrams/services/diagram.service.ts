@@ -3,6 +3,7 @@ import { DataSource } from 'typeorm';
 import { DiagramRepository } from '../repositories/diagram.repository';
 import { ProjectAccessService } from '../../projects/services/project-access.service';
 import { CollaborationGateway } from '../../projects/gateways/collaboration.gateway';
+import { ActivityService } from '../../activity/activity.service';
 import { Diagram } from '../entities/diagram.entity';
 import { UmlNode } from '../entities/uml-node.entity';
 import { UmlAttribute } from '../entities/uml-attribute.entity';
@@ -13,10 +14,12 @@ import { UpdateDiagramDto } from '../dtos/update-diagram.dto';
 import { SaveDiagramAstDto } from '../dtos/save-diagram-ast.dto';
 import { DiagramResponseDto } from '../dtos/diagram-response.dto';
 
-/** Quién cambió un diagrama, para el aviso al resto del proyecto. */
+/** Quién cambió un diagrama, para el aviso al resto del proyecto y el registro de actividad. */
 export interface DiagramActor {
   userId: string;
   userName: string;
+  /** Si el cambio lo hizo Trazo, a pedido de quién. */
+  onBehalfOf?: { userId: string; userName: string };
 }
 
 @Injectable()
@@ -26,6 +29,7 @@ export class DiagramService {
     private readonly access: ProjectAccessService,
     private readonly dataSource: DataSource,
     private readonly collaborationGateway: CollaborationGateway,
+    private readonly activity: ActivityService,
   ) {}
 
   async create(
@@ -139,6 +143,9 @@ export class DiagramService {
       assocAnchorNodeId: c.assocAnchorNodeId || null,
     }));
 
+    // El estado anterior hace falta para saber qué cambió quien guarda
+    await this.activity.prime(id);
+
     await this.dataSource.transaction(async (manager) => {
       // Atributos, métodos y conexiones se borran en cascada con los nodos
       await manager.delete(UmlConnection, { diagramId: id });
@@ -155,7 +162,19 @@ export class DiagramService {
     });
 
     const saved = DiagramResponseDto.fromEntity(await this.loadFull(id));
-    await this.announce(saved, userId, actor);
+    const who = actor || {
+      userId,
+      userName: (await this.access.getUserName(userId)) || 'Alguien',
+    };
+    // Lo que ya llegó por el socket no se cuenta dos veces: solo queda lo que no pasó por él
+    await this.activity.record(
+      id,
+      { userId: who.userId, userName: who.userName },
+      nodes,
+      astDto.connections || [],
+      who.onBehalfOf,
+    );
+    this.announce(saved, who);
     return saved;
   }
 
@@ -163,16 +182,8 @@ export class DiagramService {
    * Avisa al canal del proyecto de que un diagrama cambió (evento diagram_activity): la app
    * móvil refresca la lista y lo notifica a quien no está mirando ese diagrama.
    */
-  private async announce(
-    diagram: DiagramResponseDto,
-    userId: string,
-    actor?: DiagramActor,
-  ): Promise<void> {
+  private announce(diagram: DiagramResponseDto, who: DiagramActor): void {
     if (!diagram.projectId) return;
-    const who = actor || {
-      userId,
-      userName: (await this.access.getUserName(userId)) || 'Alguien',
-    };
     this.collaborationGateway.emitToProject(
       diagram.projectId,
       'diagram_activity',

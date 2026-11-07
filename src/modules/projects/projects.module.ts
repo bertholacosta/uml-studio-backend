@@ -12,14 +12,21 @@ import { ProjectController } from './controllers/project.controller';
 import { ProjectMemberController } from './controllers/project-member.controller';
 import { AuthModule } from '../auth/auth.module';
 import { DiagramsModule } from '../diagrams/diagrams.module';
+import { ActivityModule } from '../activity/activity.module';
+import { ProjectActivityController } from './controllers/project-activity.controller';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Project, ProjectMember]),
     forwardRef(() => DiagramsModule),
     AuthModule,
+    ActivityModule,
   ],
-  controllers: [ProjectController, ProjectMemberController],
+  controllers: [
+    ProjectController,
+    ProjectMemberController,
+    ProjectActivityController,
+  ],
   providers: [
     ProjectService,
     ProjectMemberService,

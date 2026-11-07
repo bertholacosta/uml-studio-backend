@@ -14,6 +14,20 @@ describe('resolveDiagramTarget', () => {
     ).toMatchObject({ diagram: { id: 'd2' }, reason: 'tag' });
   });
 
+  it('para revisar el trabajo de alguien usa el lienzo donde trabajó, salvo que se marque otro', () => {
+    expect(
+      resolveDiagramTarget('revisa lo que hizo Marco', diagrams, {
+        activeDiagramId: 'd1',
+        activityDiagramId: 'd2',
+      }),
+    ).toMatchObject({ diagram: { id: 'd2' }, reason: 'activity' });
+    expect(
+      resolveDiagramTarget('revisa lo que hizo Marco en #Ventas', diagrams, {
+        activityDiagramId: 'd2',
+      }),
+    ).toMatchObject({ diagram: { id: 'd1' }, reason: 'tag' });
+  });
+
   it('usa el diagrama abierto si no se marca ninguno', () => {
     expect(
       resolveDiagramTarget('agrega Producto', diagrams, {

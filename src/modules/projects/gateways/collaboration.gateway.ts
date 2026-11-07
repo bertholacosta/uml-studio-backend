@@ -15,6 +15,7 @@ import { ProjectAccessService } from '../services/project-access.service';
 import { UserRepository } from '../../auth/repositories/user.repository';
 import { JwtPayload } from '../../auth/strategies/jwt.strategy';
 import { isOriginAllowed } from '../../../config/cors.config';
+import { ActivityService } from '../../activity/activity.service';
 
 interface ClientMetadata {
   userId: string;
@@ -111,6 +112,7 @@ export class CollaborationGateway
     private readonly jwtService: JwtService,
     private readonly userRepository: UserRepository,
     private readonly access: ProjectAccessService,
+    private readonly activity: ActivityService,
   ) {}
 
   handleConnection(client: Socket): void {
@@ -148,8 +150,19 @@ export class CollaborationGateway
   }
 
   handleDisconnect(client: Socket): void {
+    const user: string | undefined =
+      this.clientMap.get(client.id)?.userId ||
+      this.projectListeners.get(client.id)?.userId;
+    const projects = this.projectsOf(client.id);
     this.leave(client);
     this.projectListeners.delete(client.id);
+    // Si ya no le queda otra pestaña en el proyecto, se apunta su última conexión
+    if (!user) return;
+    for (const projectId of projects) {
+      if (!this.connectedUsers(projectId).some((u) => u.userId === user)) {
+        void this.activity.markSeen(projectId, user);
+      }
+    }
   }
 
   /** Seguir el chat de un proyecto sin abrir ningún diagrama (app móvil, panel de proyecto). */
@@ -346,6 +359,15 @@ export class CollaborationGateway
       connections: data.connections,
       at: Date.now(),
     });
+    // Quién hizo qué: la diferencia con el estado anterior se apunta a esta persona
+    if (data.action !== 'save') {
+      void this.activity.record(
+        meta.diagramId,
+        { userId: meta.userId, userName: meta.userName },
+        data.nodes,
+        data.connections,
+      );
+    }
     client.to(roomOf(meta.diagramId)).emit('diagram_synced', {
       nodes: data.nodes,
       connections: data.connections,
@@ -444,6 +466,15 @@ export class CollaborationGateway
   }
 
   // --- Internos ---
+
+  /** Proyectos que sigue un socket (por el diagrama abierto o por el chat). */
+  private projectsOf(socketId: string): string[] {
+    const ids = [
+      this.clientMap.get(socketId)?.projectId,
+      this.projectListeners.get(socketId)?.projectId,
+    ].filter((id): id is string => !!id);
+    return [...new Set(ids)];
+  }
 
   private leave(client: Socket): void {
     const meta = this.clientMap.get(client.id);

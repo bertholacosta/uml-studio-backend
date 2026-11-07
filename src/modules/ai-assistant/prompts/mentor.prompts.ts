@@ -16,6 +16,11 @@ DÓNDE ESTÁS:
 - NUNCA actúes por tu cuenta: haz solo lo que pide el mensaje que te llama. No edites ni propongas nada que nadie haya pedido.
 - Los cambios se hacen sobre el LIENZO indicado. Si no hay lienzo elegido y la petición exige cambios, usa "clarify" y pregunta en qué diagrama, citándolos con # (ej.: #Ventas).
 
+QUIÉN HIZO QUÉ (sección ACTIVIDAD EN LOS LIENZOS):
+- Es el registro real de quién cambió qué y cuándo. Úsalo para "¿qué hizo Marco?", "¿qué han avanzado?" o "ponme al día": resume por persona y por diagrama, con nombres reales y cuándo ("hace 2 h"). Si alguien no tiene cambios registrados, dilo. NUNCA atribuyas a alguien algo que no esté en la actividad.
+- "Revisa lo que hizo Marco" o "lo que hice": revisa SOLO esos cambios (míralos en el DIAGRAMA ACTUAL), habla con quien te escribe y nombra al autor ("Ana, en lo que hizo Marco..."). Busca problemas concretos: un atributo que repite una relación (clienteId o codigoCliente cuando ya hay relación con Cliente: sobra, JPA crea la clave foránea), multiplicidades dudosas, clases sin id, tipos poco adecuados (dinero en Double en vez de BigDecimal). Si hay OBSERVACIONES VERIFICADAS, son reales: inclúyelas. Si hay mejoras, usa "propose" con sus operaciones; si todo está bien, di por qué.
+- Ponerse al día o preguntar qué hizo alguien es "answer" con "operations": [].
+
 CÓMO CONVERSAS:
 - Cada mensaje llega con el nombre de quien lo escribe. Responde SIEMPRE a esa persona y llámala por su nombre de pila (ej.: "Ana, ...").
 - Mantén el hilo de todo el equipo: si alguien se refiere a algo que dijo otra persona, úsalo y nómbrala ("como propuso Luis...").
@@ -219,12 +224,55 @@ export interface MentorTurnContext {
   /** Lienzo sobre el que trabaja este mensaje, y por qué se eligió. */
   target?: { name: string; reason: TargetReason };
   participants: MentorParticipant[];
+  /** Actividad de los lienzos ya redactada (ver describeActivity). */
+  activity?: string;
+  /** Problemas del diagrama detectados por el sistema, cuando piden una revisión. */
+  findings?: string[];
   nodes: UmlClassNode[];
   connections: UmlConnection[];
 }
 
+/** Una entrada del registro de actividad, tal como la ve Trazo. */
+export interface MentorActivityEntry {
+  actorName: string;
+  diagramName: string;
+  summary: string;
+  updatedAt: Date;
+}
+
+const MAX_ACTIVITY_LINE = 320;
+
+/** «hace 25 min», «hace 3 h», «ayer», «hace 4 días». */
+export function timeAgo(date: Date, now = new Date()): string {
+  const minutes = Math.round((now.getTime() - date.getTime()) / 60_000);
+  if (minutes < 1) return 'hace un momento';
+  if (minutes < 60) return `hace ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `hace ${hours} h`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? 'ayer' : `hace ${days} días`;
+}
+
+/** Sección ACTIVIDAD EN LOS LIENZOS del prompt: un renglón por persona, diagrama y rato de trabajo. */
+export function describeActivity(
+  title: string,
+  entries: MentorActivityEntry[],
+  now = new Date(),
+  note?: string,
+): string {
+  const lines = entries.map((e) => {
+    const line = `- ${timeAgo(e.updatedAt, now)}, ${e.actorName} en ${diagramTag(e.diagramName)}: ${e.summary}`;
+    return line.length > MAX_ACTIVITY_LINE
+      ? `${line.slice(0, MAX_ACTIVITY_LINE - 1)}…`
+      : line;
+  });
+  return `ACTIVIDAD EN LOS LIENZOS (${title}; lo más reciente primero):
+${lines.length ? lines.join('\n') : '- sin cambios registrados'}${note ? `\n${note}` : ''}`;
+}
+
 const TARGET_REASONS: Record<TargetReason, string> = {
   tag: 'lo indicó con #',
+  activity: 'es donde trabajó la persona de la que se habla',
   open: 'es el diagrama que tiene abierto',
   classes: 'es el único diagrama con las clases que menciona',
   thread: 'es el diagrama del que se venía hablando',
@@ -269,7 +317,14 @@ export function buildMentorPrompt(ctx: MentorTurnContext): string {
     ? `LIENZO: ${diagramTag(ctx.target.name)} (${TARGET_REASONS[ctx.target.reason]})
 
 DIAGRAMA ACTUAL (${diagramTag(ctx.target.name)}):
-${describeDiagram(ctx.nodes, ctx.connections)}`
+${describeDiagram(ctx.nodes, ctx.connections)}${
+        ctx.findings?.length
+          ? `
+
+OBSERVACIONES VERIFICADAS DEL DIAGRAMA (inclúyelas en tu revisión y propón corregirlas):
+${ctx.findings.map((f) => `- ${f}`).join('\n')}`
+          : ''
+      }`
     : 'LIENZO: ninguno elegido. Si piden cambios, pregunta en qué diagrama.';
 
   return `${
@@ -280,7 +335,7 @@ ${describeDiagram(ctx.nodes, ctx.connections)}`
   }DIAGRAMAS DEL PROYECTO: ${diagrams}
 CONECTADOS AHORA: ${people}
 DÓNDE: ${channel}
-
+${ctx.activity ? `\n${ctx.activity}\n` : ''}
 ${canvas}
 
 MENSAJE DE ${ctx.speaker} (${ctx.canEdit ? 'puede editar' : 'solo lectura: no puede editar'}):
