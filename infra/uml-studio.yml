@@ -12,12 +12,26 @@ Parameters:
   GitHubOwner:
     Type: String
     Description: Usuario u organización de GitHub dueña de los repositorios
+  GitHubOwnerId:
+    Type: String
+    AllowedPattern: '^[0-9]+$'
+    Description: >-
+      ID numérico de la cuenta de GitHub. GitHub envía el sub de OIDC en formato inmutable
+      (repo:dueño@id/repo@id:...): gh api repos/<dueño>/<repo>/actions/oidc/customization/sub
   BackendRepo:
     Type: String
     Default: uml-studio-backend
+  BackendRepoId:
+    Type: String
+    AllowedPattern: '^[0-9]+$'
+    Description: ID numérico del repositorio del backend
   FrontendRepo:
     Type: String
     Default: uml-studio-frontend
+  FrontendRepoId:
+    Type: String
+    AllowedPattern: '^[0-9]+$'
+    Description: ID numérico del repositorio del frontend
   ExistingGitHubOidcProviderArn:
     Type: String
     Default: ''
@@ -84,7 +98,7 @@ Resources:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
               StringLike:
                 # Solo la rama main puede desplegar
-                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOwner}/${BackendRepo}:ref:refs/heads/main'
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOwner}@${GitHubOwnerId}/${BackendRepo}@${BackendRepoId}:ref:refs/heads/main'
       Policies:
         - PolicyName: deploy-backend
           PolicyDocument:
@@ -132,7 +146,7 @@ Resources:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
               StringLike:
-                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOwner}/${FrontendRepo}:ref:refs/heads/main'
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOwner}@${GitHubOwnerId}/${FrontendRepo}@${FrontendRepoId}:ref:refs/heads/main'
       Policies:
         - PolicyName: deploy-frontend
           PolicyDocument:
