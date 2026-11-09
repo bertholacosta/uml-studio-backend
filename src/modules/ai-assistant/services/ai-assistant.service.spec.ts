@@ -139,7 +139,7 @@ describe('AiAssistantService', () => {
     lastSeen: jest.Mock;
     summarySince: jest.Mock;
   };
-  let diagrams: { findOne: jest.Mock; saveAst: jest.Mock };
+  let diagrams: { findOne: jest.Mock; saveAst: jest.Mock; create: jest.Mock };
   let conversations: FakeConversations;
   let collaborationGateway: {
     broadcastAiMutation: jest.Mock;
@@ -203,6 +203,10 @@ describe('AiAssistantService', () => {
     diagrams = {
       findOne: jest.fn().mockResolvedValue({ nodes: [], connections: [] }),
       saveAst: jest.fn().mockResolvedValue({}),
+      create: jest.fn(async (dto: { name: string }) => ({
+        id: 'diag-new',
+        name: dto.name,
+      })),
     };
     conversations = new FakeConversations();
     collaborationGateway = {
@@ -1865,6 +1869,111 @@ describe('AiAssistantService', () => {
         }),
       );
 
+    describe('crear diagramas', () => {
+      const ask = async (text: string, extra: object = {}) =>
+        (
+          await service.submitMessage(
+            'proj-1',
+            { channel: 'direct', text, ...extra },
+            ana,
+          )
+        ).result;
+
+      it('crea el diagrama y diseña su contenido aunque haya otro abierto', async () => {
+        addPago();
+        const response = await ask(
+          'crea un nuevo diagrama para un e-commerce',
+          {
+            activeDiagramId: 'diag-123',
+            currentNodes: [],
+            currentConnections: [],
+          },
+        );
+
+        expect(diagrams.create).toHaveBeenCalledWith(
+          { projectId: 'proj-1', name: 'E-commerce' },
+          'user-1',
+        );
+        expect(diagrams.saveAst.mock.calls[0][0]).toBe('diag-new');
+        expect(aiProvider.generate.mock.calls[0][0].parts[0].text).toContain(
+          'YA CREÓ el diagrama vacío #E-commerce',
+        );
+        expect(response).toMatchObject({
+          action: 'diagram_mutated',
+          assistantMessage: {
+            diagramId: 'diag-new',
+            diagramName: 'E-commerce',
+            text: expect.stringContaining('creé #E-commerce'),
+          },
+        });
+        expect(collaborationGateway.emitToProject).toHaveBeenCalledWith(
+          'proj-1',
+          'diagram_activity',
+          expect.objectContaining({ diagramId: 'diag-new' }),
+        );
+      });
+
+      it('el texto no depende del modelo si este dice que no puede', async () => {
+        mockModelResponse(
+          JSON.stringify({
+            reply: 'Ana, no puedo crear un nuevo diagrama.',
+            intent: 'answer',
+            operations: [],
+          }),
+        );
+        const response = await ask('crea un diagrama para una clínica');
+        expect(response?.message).toContain('creé #Clínica');
+        expect(response?.message).not.toContain('no puedo');
+      });
+
+      it('crea vacío sin llamar al modelo si no dice de qué trata', async () => {
+        const response = await ask('crea un diagrama nuevo');
+        expect(aiProvider.generate).not.toHaveBeenCalled();
+        expect(response?.assistantMessage).toMatchObject({
+          diagramId: 'diag-new',
+          text: expect.stringContaining('#Nuevo-diagrama'),
+        });
+      });
+
+      it('no repite un nombre del proyecto', async () => {
+        await ask('crea otro diagrama llamado Ventas');
+        expect(diagrams.create.mock.calls[0][0].name).toBe('Ventas 2');
+      });
+
+      it('sin permiso de edición no crea nada', async () => {
+        const response = await ask('crea un diagrama nuevo', {
+          readOnly: true,
+        });
+        expect(diagrams.create).not.toHaveBeenCalled();
+        expect(response?.success).toBe(false);
+      });
+
+      it('en modo «solo explicar» no crea nada', async () => {
+        configure({ delivery: 'explain' });
+        const response = await ask('crea un diagrama para un hotel');
+        expect(diagrams.create).not.toHaveBeenCalled();
+        expect(response?.message).toContain('solo explico');
+      });
+
+      it('en modo «proponer» crea el lienzo y deja el contenido como propuesta', async () => {
+        configure({ delivery: 'propose' });
+        addPago();
+        const response = await ask('crea un diagrama para un hotel');
+        expect(diagrams.create).toHaveBeenCalled();
+        expect(diagrams.saveAst).not.toHaveBeenCalled();
+        expect(response).toMatchObject({
+          action: 'proposal',
+          assistantMessage: { diagramId: 'diag-new' },
+        });
+      });
+
+      it('«arma el diagrama de ventas» usa el que ya existe', async () => {
+        answer();
+        await ask('arma el diagrama de ventas');
+        expect(diagrams.create).not.toHaveBeenCalled();
+      });
+    });
+
     it('un mensaje entre personas se comparte con el equipo sin llamar a Trazo', async () => {
       const { message, result } = await service.submitMessage(
         'proj-1',
@@ -2083,6 +2192,33 @@ describe('AiAssistantService', () => {
   });
 
   describe('resolveManyToManyRelationships', () => {
+    it('no convierte en clase el verbo de la relación', () => {
+      const node = (id: string, name: string) => ({
+        id,
+        name,
+        position: { x: 0, y: 0 },
+        attributes: [],
+        methods: [],
+      });
+      const { nodes } = resolveManyToManyRelationships(
+        [node('n1', 'Pedido'), node('n2', 'Producto')] as any,
+        [
+          {
+            id: 'conn_1',
+            sourceNodeId: 'n1',
+            targetNodeId: 'n2',
+            type: 'association',
+            name: 'contiene',
+            sourceMultiplicity: '*',
+            targetMultiplicity: '*',
+          },
+        ] as any,
+      );
+      const names = nodes.map((n) => n.name);
+      expect(names).toContain('Pedido_Producto');
+      expect(names).not.toContain('contiene');
+    });
+
     it('debe generar tabla intermedia para multiplicidades *, 0..*, 1..* y n sin alterar relaciones 1 a muchos', () => {
       const nodes = [
         {

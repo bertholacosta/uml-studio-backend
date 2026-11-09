@@ -19,6 +19,8 @@ DÓNDE ESTÁS:
 - En el CANAL DEL EQUIPO (como Slack): las personas también hablan entre ellas. Esos mensajes son contexto; tú respondes solo al último, el que te menciona con @Trazo. Todos ven tu respuesta.
 - O en una CONVERSACIÓN PRIVADA con una persona: nadie más la ve.
 - NUNCA actúes por tu cuenta: haz solo lo que pide el mensaje que te llama. No edites ni propongas nada que nadie haya pedido.
+- Trabajas para TODO EL PROYECTO, no para un diagrama abierto: te pueden hablar desde cualquier parte de la aplicación y puedes conversar sobre cualquiera de sus diagramas.
+- El sistema crea los diagramas nuevos cuando te los piden. NUNCA digas que no puedes crear un diagrama ni pidas cerrar el que está abierto.
 - Los cambios se hacen sobre el LIENZO indicado. Si no hay lienzo elegido y la petición exige cambios, usa "clarify" y pregunta en qué diagrama, citándolos con # (ej.: #Ventas).
 
 QUIÉN HIZO QUÉ (sección ACTIVIDAD EN LOS LIENZOS):
@@ -293,6 +295,7 @@ const TARGET_REASONS: Record<TargetReason, string> = {
   classes: 'es el único diagrama con las clases que menciona',
   thread: 'es el diagrama del que se venía hablando',
   only: 'es el único diagrama del proyecto',
+  created: 'es un diagrama nuevo, recién creado y vacío',
 };
 
 /** Instrucción de sistema con el resumen de la conversación anterior, si existe. */
@@ -372,7 +375,15 @@ ${ctx.activity ? `\n${ctx.activity}\n` : ''}
 ${canvas}
 
 ${quotedBlock(ctx)}MENSAJE DE ${ctx.speaker} (${ctx.canEdit ? 'puede editar' : 'solo lectura: no puede editar'}):
-"${ctx.prompt}"${proposalTask(ctx)}`;
+"${ctx.prompt}"${proposalTask(ctx)}${creationTask(ctx)}`;
+}
+
+/** Diagrama recién creado: el modelo pequeño atiende más a lo último que lee. */
+function creationTask(ctx: MentorTurnContext): string {
+  if (ctx.target?.reason !== 'created') return '';
+  return `
+
+TAREA: el sistema YA CREÓ el diagrama vacío ${diagramTag(ctx.target.name)}; es el LIENZO de este mensaje. Diseña su contenido: responde con "intent": "edit" y en "operations" las add_class (cada clase con "id" de tipo UUID y sus atributos principales) y las add_relation entre ellas. Modela lo que pide el mensaje; si solo nombra un dominio, incluye sus 4 a 8 clases esenciales. En "changesSummary" enumera las clases creadas.`;
 }
 
 /**

@@ -15,6 +15,11 @@ import {
 import { ProjectAccessService } from '../../projects/services/project-access.service';
 import { ProjectRole } from '../../projects/entities/project-role.enum';
 import { DiagramService } from '../../diagrams/services/diagram.service';
+import {
+  diagramCreationRequest,
+  uniqueDiagramName,
+  type DiagramCreationRequest,
+} from '../domain/diagram-creation';
 import { AiPromptDto, AiVisionPromptDto } from '../dtos/ai-request.dto';
 import { AiResponseDto } from '../dtos/ai-response.dto';
 import {
@@ -423,14 +428,26 @@ export class AiAssistantService {
     if (!callsTrazo) return { message };
 
     const result = this.enqueue(conversation, user, async () => {
-      const canvas = await this.canvasFor(
-        conversation,
-        text,
-        dto,
-        receivedAt,
-        user,
-        quoted?.diagramId,
-      );
+      const creation = quoted
+        ? null
+        : await this.createRequestedDiagram(
+            conversation,
+            userMessage,
+            user,
+            canEdit,
+            text,
+          );
+      if (creation?.response) return creation.response;
+      const canvas =
+        creation?.canvas ??
+        (await this.canvasFor(
+          conversation,
+          text,
+          dto,
+          receivedAt,
+          user,
+          quoted?.diagramId,
+        ));
       const response = await this.answerText(
         conversation,
         userMessage,
@@ -468,6 +485,115 @@ export class AiAssistantService {
       user,
     );
     return result!;
+  }
+
+  /**
+   * Crea el diagrama que pide el mensaje, si pide uno. Devuelve la respuesta si ya no hace
+   * falta el modelo (sin permiso, «solo explicar» o diagrama vacío) o el lienzo nuevo para que
+   * Trazo diseñe su contenido; null si el mensaje no pide un diagrama nuevo.
+   */
+  private async createRequestedDiagram(
+    conversation: AiConversationDocument,
+    userMessage: AiMessageDocument,
+    user: ChatUser,
+    canEdit: boolean,
+    text: string,
+  ): Promise<{ response?: AiResponseDto; canvas?: Canvas } | null> {
+    const request = diagramCreationRequest(text);
+    if (!request) return null;
+    const projectId = conversation.projectId;
+    const diagrams = await this.access.listProjectDiagrams(projectId);
+    if (this.alreadyExists(request, diagrams)) return null;
+
+    const answer = async (
+      replyText: string,
+      success: boolean,
+      onCanvas: { diagramId?: string; diagramName?: string } = {},
+    ) => {
+      const message = await this.publish(conversation, {
+        role: 'assistant',
+        author: TRAZO,
+        replyTo: userMessage.id,
+        intent: 'answer',
+        ...onCanvas,
+        text: addressTo(user.fullName, replyText),
+      });
+      return {
+        response: {
+          success,
+          action: 'answer',
+          message: message.text,
+          nodes: [],
+          connections: [],
+          changesSummary: '',
+          userMessage: this.conversations.toDto(userMessage),
+          assistantMessage: this.conversations.toDto(message),
+        },
+      };
+    };
+
+    if (!canEdit) {
+      return answer(
+        'no puedo crear el diagrama desde aquí: hace falta permiso de edición y estar en la aplicación web.',
+        false,
+      );
+    }
+    const settings = await this.settings.get(projectId);
+    if (settings.delivery === 'explain') {
+      return answer(
+        'en este proyecto solo explico y no toco los diagramas, así que no lo creo. Un editor puede crearlo o cambiar el modo en «Configurar Trazo».',
+        false,
+      );
+    }
+
+    const created = await this.diagrams.create(
+      {
+        projectId,
+        name: uniqueDiagramName(
+          request.name,
+          diagrams.map((d) => d.name),
+        ),
+      },
+      user.id,
+    );
+    this.collaborationGateway.emitToProject(projectId, 'diagram_activity', {
+      projectId,
+      diagramId: created.id,
+      diagramName: created.name,
+      userId: AI_USER_ID,
+      userName: `${AI_USER_NAME} (a pedido de ${firstName(user.fullName)})`,
+      classCount: 0,
+      at: new Date().toISOString(),
+    });
+
+    if (!request.design) {
+      return answer(
+        `creé ${diagramTag(created.name)}, vacío por ahora. Dime qué clases le agrego o ábrelo desde este mensaje.`,
+        true,
+        { diagramId: created.id, diagramName: created.name },
+      );
+    }
+    const diagram = { id: created.id, name: created.name, classNames: [] };
+    return {
+      canvas: {
+        target: { diagram, reason: 'created' },
+        diagrams: [...diagrams, diagram],
+        nodes: [],
+        connections: [],
+      },
+    };
+  }
+
+  /** «Arma el diagrama de ventas» con #Ventas ya en el proyecto: se trabaja sobre ese. */
+  private alreadyExists(
+    request: DiagramCreationRequest,
+    diagrams: { name: string }[],
+  ): boolean {
+    const wanted = normalizeForFuzzy(request.name);
+    return (
+      request.definite &&
+      diagrams.some((d) => normalizeForFuzzy(d.name) === wanted)
+    );
   }
 
   private async answerText(
@@ -624,6 +750,11 @@ export class AiAssistantService {
       ) {
         intent = 'edit';
       }
+      // En un diagrama recién creado, lo que devuelva el modelo es su contenido
+      const justCreated = target?.reason === 'created';
+      if (justCreated && operations.length && intent !== 'propose') {
+        intent = 'edit';
+      }
       // Quien solo puede ver recibe la propuesta para que un editor la aplique
       if (intent === 'edit' && !canEdit) intent = 'propose';
       let text: string =
@@ -648,6 +779,19 @@ export class AiAssistantService {
               ? `${text}\n\n`
               : '';
           text = `${explanation}En este proyecto solo explico, sin tocar el diagrama. Para hacerlo en el editor: ${steps.join('; ')}.`;
+        }
+      }
+      // El diagrama ya existe: el texto lo escribe el orquestador, para no decir algo falso
+      if (justCreated) {
+        const tag = diagramTag(target.diagram.name);
+        const summary = parsed.changesSummary || 'las clases principales';
+        if (!operations.length) {
+          intent = 'answer';
+          text = `creé ${tag}, vacío por ahora: no me quedó claro qué poner. Dime qué clases le agrego.`;
+        } else if (intent === 'propose') {
+          text = `creé ${tag} vacío y te dejo la propuesta de contenido: ${summary}. Cualquier editor puede pulsar «Aplicar».`;
+        } else {
+          text = `creé ${tag} y armé un modelo inicial: ${summary}. Ábrelo desde este mensaje.`;
         }
       }
       const modelInfo = {
@@ -686,7 +830,7 @@ export class AiAssistantService {
         const message = await reply({
           text: tags.length
             ? `¿en qué diagrama lo hago? Indícalo con #: ${tags.join(', ')}.`
-            : 'el proyecto todavía no tiene diagramas: crea uno y vuelve a pedírmelo.',
+            : 'el proyecto todavía no tiene diagramas. Pídeme «crea un diagrama de…» y lo armo.',
           intent: 'clarify',
           status: 'clarification',
           ...modelInfo,
@@ -803,7 +947,9 @@ export class AiAssistantService {
         user,
         currentNodes,
         currentConnections,
-        'no pude procesar ese mensaje. Prueba a reformularlo.',
+        target?.reason === 'created'
+          ? `creé ${diagramTag(target.diagram.name)}, pero no pude diseñar su contenido. Pídemelo de nuevo indicando ese diagrama.`
+          : 'no pude procesar ese mensaje. Prueba a reformularlo.',
       );
     } finally {
       draft.close();

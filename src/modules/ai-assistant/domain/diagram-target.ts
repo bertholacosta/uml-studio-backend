@@ -13,7 +13,15 @@ export interface DiagramRef {
  * el que trabajó Trazo en la conversación) u only (el proyecto tiene un único diagrama).
  */
 export type TargetReason =
-  'tag' | 'quote' | 'activity' | 'open' | 'classes' | 'thread' | 'only';
+  | 'tag'
+  | 'quote'
+  | 'activity'
+  | 'open'
+  | 'classes'
+  | 'thread'
+  | 'only'
+  /** Trazo acaba de crearlo a pedido del mensaje. */
+  | 'created';
 
 export interface DiagramTarget {
   diagram: DiagramRef;

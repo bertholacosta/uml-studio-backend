@@ -251,8 +251,9 @@ export function resolveManyToManyRelationships(
       const timestamp =
         Date.now() + resolvedCount + Math.floor(Math.random() * 1000);
       const assocNodeId = `node_${timestamp}_assoc`;
+      // El nombre de la relación suele ser un verbo («contiene»): solo vale si parece una clase
       const assocName =
-        conn.name && conn.name !== 'relacion' && !conn.name.startsWith('conn_')
+        conn.name && /^\p{Lu}/u.test(conn.name)
           ? conn.name
           : `${sourceNode.name}_${targetNode.name}`;
 
