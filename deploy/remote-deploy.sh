@@ -27,10 +27,11 @@ chmod 600 .env
 aws ecr get-login-password --region "$REGION" |
   docker login --username AWS --password-stdin "${IMAGE%%/*}"
 
-# Bases de datos primero; el esquema es idempotente y se aplica en cada despliegue
+# Bases de datos primero; el esquema es idempotente y se aplica en cada despliegue.
+# Va por stdin: tar reemplaza schema.sql y el contenedor seguiría viendo la versión anterior
+# en su montaje, así que los cambios de esquema de cada commit no llegarían a aplicarse.
 "${COMPOSE[@]}" up -d --wait db mongo
-"${COMPOSE[@]}" exec -T db psql -U postgres -d uml_studio_db -v ON_ERROR_STOP=1 -q \
-  -f /docker-entrypoint-initdb.d/schema.sql
+"${COMPOSE[@]}" exec -T db psql -U postgres -d uml_studio_db -v ON_ERROR_STOP=1 -q -f - < schema.sql
 
 "${COMPOSE[@]}" pull api
 "${COMPOSE[@]}" up -d --remove-orphans api
