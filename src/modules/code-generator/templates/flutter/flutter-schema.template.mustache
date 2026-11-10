@@ -1,0 +1,117 @@
+/// Clases y campos del diagrama UML.
+///
+/// Es el único archivo que cambia de un diagrama a otro: las pantallas, la API y el
+/// asistente leen de aquí qué entidades existen y qué campos tiene cada una.
+library;
+
+typedef Json = Map<String, dynamic>;
+
+class Field {
+  const Field(
+    this.name,
+    this.type, {
+    this.isId = false,
+    this.required = false,
+    this.secret = false,
+    this.ref,
+  });
+
+  final String name;
+
+  /// text | int | double | bool | date | datetime | ids
+  final String type;
+  final bool isId;
+  final bool required;
+
+  /// Contraseñas y similares: no se muestran y se escriben ocultas.
+  final bool secret;
+
+  /// Entidad relacionada, cuando el campo guarda su id (o una lista de ids).
+  final String? ref;
+
+  bool get isNumber => type == 'int' || type == 'double';
+
+  /// Convierte lo que escribió o dictó la persona al tipo del campo.
+  /// Devuelve null si el texto no sirve para ese tipo.
+  Object? parse(String text) {
+    final value = text.trim();
+    if (value.isEmpty) return null;
+    switch (type) {
+      case 'int':
+        return int.tryParse(value);
+      case 'double':
+        return double.tryParse(value.replaceAll(',', '.'));
+      case 'bool':
+        final v = value.toLowerCase();
+        if (const ['true', 'si', 'sí', '1', 'verdadero', 'activo'].contains(v)) return true;
+        if (const ['false', 'no', '0', 'falso', 'inactivo'].contains(v)) return false;
+        return null;
+      case 'ids':
+        return [
+          for (final id in value.split(',')) if (id.trim().isNotEmpty) id.trim(),
+        ];
+      default:
+        return value;
+    }
+  }
+}
+
+class Entity {
+  const Entity({
+    required this.name,
+    required this.singular,
+    required this.plural,
+    required this.endpoint,
+    required this.title,
+    required this.fields,
+  });
+
+  /// Nombre de la clase en el diagrama.
+  final String name;
+  final String singular;
+  final String plural;
+
+  /// Ruta REST de la entidad en el backend.
+  final String endpoint;
+
+  /// Campo que identifica un registro ante una persona (su nombre, su título…).
+  final String title;
+  final List<Field> fields;
+
+  Field get idField => fields.firstWhere((f) => f.isId, orElse: () => fields.first);
+
+  List<Field> get editable => [
+        for (final f in fields) if (!f.isId) f,
+      ];
+
+  String idOf(Map record) => '${record[idField.name] ?? ''}';
+
+  String titleOf(Map record) {
+    final value = '${record[title] ?? ''}'.trim();
+    return value.isEmpty ? '#${idOf(record)}' : value;
+  }
+}
+
+const entities = <Entity>[
+{{#entities}}
+  Entity(
+    name: '{{name}}',
+    singular: '{{singular}}',
+    plural: '{{plural}}',
+    endpoint: '{{endpoint}}',
+    title: '{{title}}',
+    fields: [
+{{#fields}}
+      Field('{{name}}', '{{type}}'{{#isId}}, isId: true{{/isId}}{{#required}}, required: true{{/required}}{{#secret}}, secret: true{{/secret}}{{#hasRef}}, ref: '{{refName}}'{{/hasRef}}),
+{{/fields}}
+    ],
+  ),
+{{/entities}}
+];
+
+Entity? entityNamed(String? name) {
+  for (final e in entities) {
+    if (e.name == name) return e;
+  }
+  return null;
+}

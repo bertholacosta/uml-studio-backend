@@ -1,0 +1,145 @@
+import 'dart:io';
+import 'dart:math' as math;
+
+import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
+import 'package:lib_llama_cpp/lib_llama_cpp.dart';
+import 'package:path_provider/path_provider.dart';
+
+enum ModelStatus {
+  /// Todavía no se ha mirado si el modelo está en el dispositivo.
+  unknown,
+
+  /// No está descargado: hace falta pedirlo con [LocalModel.prepare].
+  missing,
+  downloading,
+  loading,
+  ready,
+  failed,
+}
+
+/// Modelo de lenguaje que corre dentro del dispositivo: Qwen2.5 0.5B con llama.cpp.
+///
+/// Los ajustes de esta clase son los que deciden la velocidad. La librería vuelve
+/// a evaluar el mensaje completo en cada petición (no guarda nada entre una y
+/// otra), así que cada token de entrada y de salida cuesta tiempo:
+/// - contexto pequeño: menos memoria que reservar en cada petición;
+/// - hilos = núcleos rápidos: los núcleos de ahorro frenan al resto;
+/// - sin azar (temperatura 0): la misma orden da siempre la misma respuesta.
+class LocalModel {
+  LocalModel._();
+
+  static final LocalModel instance = LocalModel._();
+
+  static const _fileName = 'qwen2.5-0.5b-instruct-q4_k_m.gguf';
+  static const _url = 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/$_fileName';
+
+  /// El archivo pesa unos 400 MB; menos que esto es una descarga a medias.
+  static const _minBytes = 350 * 1000 * 1000;
+
+  /// Tokens que caben entre instrucción, mensaje y respuesta. El asistente
+  /// mantiene su instrucción muy por debajo de este tope.
+  static const contextSize = 1024;
+
+  /// Mitad de los núcleos, entre 2 y 4: en un teléfono de 8 son los 4 rápidos.
+  static final int threads = math.min(4, math.max(2, Platform.numberOfProcessors ~/ 2));
+
+  final ValueNotifier<ModelStatus> status = ValueNotifier(ModelStatus.unknown);
+
+  /// Avance de la descarga, de 0 a 1.
+  final ValueNotifier<double> progress = ValueNotifier(0);
+
+  /// Por qué falló la descarga o la carga, si [status] es [ModelStatus.failed].
+  String error = '';
+
+  LlamaOpenAIClient? _client;
+
+  bool get isReady => status.value == ModelStatus.ready;
+
+  /// Deja el modelo listo. Si no está en el dispositivo solo lo descarga cuando
+  /// [download] es true: son unos 400 MB y lo decide la persona.
+  Future<void> prepare({bool download = false}) async {
+    const busy = {ModelStatus.downloading, ModelStatus.loading, ModelStatus.ready};
+    if (busy.contains(status.value)) return;
+    try {
+      final file = await _modelFile();
+      if (!file.existsSync() || file.lengthSync() < _minBytes) {
+        if (!download) {
+          status.value = ModelStatus.missing;
+          return;
+        }
+        await _download(file);
+      }
+
+      status.value = ModelStatus.loading;
+      final client = LlamaOpenAIClient(
+        models: {
+          'qwen': LlamaModelConfig(
+            modelPath: file.path,
+            contextSize: contextSize,
+            batchSize: 512,
+            threadCount: threads,
+          ),
+        },
+      );
+      // Una petición de un token carga el modelo en memoria ahora, para que el
+      // primer mensaje de la persona no espere esa carga
+      await _ask(client, system: '', user: 'Hola', maxTokens: 1);
+      _client = client;
+      status.value = ModelStatus.ready;
+    } catch (e) {
+      error = '$e';
+      status.value = ModelStatus.failed;
+    }
+  }
+
+  /// Respuesta del modelo a un único mensaje, sin historial.
+  Future<String> generate({required String system, required String user, int maxTokens = 128}) {
+    final client = _client;
+    if (client == null || !isReady) throw StateError('El modelo no está listo.');
+    return _ask(client, system: system, user: user, maxTokens: maxTokens);
+  }
+
+  static Future<String> _ask(
+    LlamaOpenAIClient client, {
+    required String system,
+    required String user,
+    required int maxTokens,
+  }) async {
+    final response = await client.responses.create(
+      model: 'qwen',
+      instructions: system.isEmpty ? null : system,
+      input: user,
+      maxOutputTokens: maxTokens,
+      temperature: 0,
+      stop: const ['<|im_end|>', '<|endoftext|>', '\n\n'],
+    );
+    return response.outputText.trim();
+  }
+
+  Future<File> _modelFile() async {
+    final dir = await getApplicationSupportDirectory();
+    return File('${dir.path}/$_fileName');
+  }
+
+  /// Descarga a un archivo temporal y lo renombra al terminar: una descarga
+  /// cortada nunca se toma por el modelo completo.
+  Future<void> _download(File file) async {
+    status.value = ModelStatus.downloading;
+    progress.value = 0;
+    final partial = '${file.path}.part';
+    await Dio().download(
+      _url,
+      partial,
+      onReceiveProgress: (received, total) {
+        if (total > 0) progress.value = received / total;
+      },
+    );
+    final downloaded = File(partial);
+    if (downloaded.lengthSync() < _minBytes) {
+      downloaded.deleteSync();
+      throw const FileSystemException('La descarga del modelo quedó incompleta.');
+    }
+    await downloaded.rename(file.path);
+  }
+}

@@ -1,0 +1,310 @@
+import 'package:flutter/material.dart';
+import 'package:speech_to_text/speech_to_text.dart';
+
+import '../schema.dart';
+import 'assistant.dart';
+import 'interpreter.dart';
+import 'local_model.dart';
+
+class _Message {
+  const _Message(this.text, {this.fromUser = false, this.isError = false, this.note = ''});
+
+  final String text;
+  final bool fromUser;
+  final bool isError;
+
+  /// Quién entendió la orden y cuánto tardó.
+  final String note;
+}
+
+/// Chat con el asistente: se le escribe o se le dicta una orden y la ejecuta.
+class AssistantScreen extends StatefulWidget {
+  const AssistantScreen({super.key});
+
+  @override
+  State<AssistantScreen> createState() => _AssistantScreenState();
+}
+
+class _AssistantScreenState extends State<AssistantScreen> {
+  final _assistant = Assistant();
+  final _input = TextEditingController();
+  final _scroll = ScrollController();
+  final _speech = SpeechToText();
+  final _messages = <_Message>[_Message(Assistant.help)];
+
+  bool _thinking = false;
+  bool _listening = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Si el modelo ya está descargado se carga solo; si no, se ofrece descargarlo
+    LocalModel.instance.prepare();
+  }
+
+  @override
+  void dispose() {
+    _speech.stop();
+    _input.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send([String? suggestion]) async {
+    final text = (suggestion ?? _input.text).trim();
+    if (text.isEmpty || _thinking) return;
+    _input.clear();
+    _add(_Message(text, fromUser: true));
+    setState(() => _thinking = true);
+
+    final watch = Stopwatch()..start();
+    final command = await _assistant.understand(text);
+    final seconds = (watch.elapsedMilliseconds / 1000).toStringAsFixed(1);
+    final note = '${command.fromModel ? 'Qwen2.5 en el dispositivo' : 'Reglas'} · $seconds s';
+
+    // Borrar no se deshace: se confirma antes
+    if (command.action == 'delete' && command.id.isNotEmpty && !await _confirmDelete(command)) {
+      _add(_Message('No eliminé nada.', note: note));
+    } else {
+      final reply = await _assistant.run(command);
+      _add(_Message(reply.text, isError: reply.isError, note: note));
+    }
+    if (mounted) setState(() => _thinking = false);
+  }
+
+  Future<bool> _confirmDelete(Command command) async {
+    if (!mounted) return false;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('¿Eliminar ${command.entity!.singular} ${command.id}?'),
+        content: const Text('Esta acción no se puede deshacer.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Eliminar')),
+        ],
+      ),
+    );
+    return confirmed == true;
+  }
+
+  void _add(_Message message) {
+    if (!mounted) return;
+    setState(() => _messages.add(message));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
+    });
+  }
+
+  /// Dictado con el reconocedor de voz del sistema: el texto queda en la caja
+  /// para revisarlo antes de enviarlo.
+  Future<void> _toggleDictation() async {
+    if (_listening) {
+      await _speech.stop();
+      setState(() => _listening = false);
+      return;
+    }
+    final available = await _speech.initialize(
+      onError: (error) => mounted ? setState(() => _listening = false) : null,
+      onStatus: (status) {
+        if (mounted && (status == 'done' || status == 'notListening')) setState(() => _listening = false);
+      },
+    );
+    if (!mounted) return;
+    if (!available) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('El dictado no está disponible o falta el permiso de micrófono.')),
+      );
+      return;
+    }
+    String? spanish;
+    for (final locale in await _speech.locales()) {
+      if (locale.localeId.toLowerCase().startsWith('es')) {
+        spanish = locale.localeId;
+        break;
+      }
+    }
+    setState(() => _listening = true);
+    await _speech.listen(
+      listenOptions: SpeechListenOptions(localeId: spanish),
+      onResult: (result) => _input.text = result.recognizedWords,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Asistente')),
+      body: SafeArea(
+        child: Column(
+          children: [
+            const _ModelBanner(),
+            Expanded(
+              child: ListView.builder(
+                controller: _scroll,
+                padding: const EdgeInsets.all(12),
+                itemCount: _messages.length,
+                itemBuilder: (context, index) => _Bubble(message: _messages[index]),
+              ),
+            ),
+            if (_thinking) const LinearProgressIndicator(minHeight: 2),
+            SizedBox(
+              height: 48,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                children: [
+                  for (final entity in entities.take(3))
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ActionChip(
+                        label: Text('Lista ${entity.plural}'),
+                        onPressed: () => _send('Lista ${entity.plural}'),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _input,
+                      minLines: 1,
+                      maxLines: 4,
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => _send(),
+                      decoration: InputDecoration(
+                        hintText: _listening ? 'Escuchando…' : 'Escribe o dicta una orden',
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: _listening ? 'Detener el dictado' : 'Dictar',
+                    icon: Icon(_listening ? Icons.mic : Icons.mic_none),
+                    onPressed: _toggleDictation,
+                  ),
+                  IconButton.filled(
+                    tooltip: 'Enviar',
+                    icon: const Icon(Icons.send),
+                    onPressed: _thinking ? null : _send,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Estado del modelo local: descargarlo, cargándose, listo o con error.
+/// Sin modelo el asistente sigue funcionando con las reglas.
+class _ModelBanner extends StatelessWidget {
+  const _ModelBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final model = LocalModel.instance;
+    return ValueListenableBuilder<ModelStatus>(
+      valueListenable: model.status,
+      builder: (context, status, child) {
+        switch (status) {
+          case ModelStatus.unknown:
+          case ModelStatus.ready:
+            return const SizedBox.shrink();
+          case ModelStatus.missing:
+            return _banner(
+              context,
+              'El modelo de IA (≈400 MB) no está en este dispositivo. Mientras tanto respondo con reglas.',
+              action: 'Descargar',
+              onAction: () => model.prepare(download: true),
+            );
+          case ModelStatus.downloading:
+            return ValueListenableBuilder<double>(
+              valueListenable: model.progress,
+              builder: (context, progress, child) => _banner(
+                context,
+                'Descargando el modelo de IA… ${(progress * 100).round()} %',
+                progress: progress,
+              ),
+            );
+          case ModelStatus.loading:
+            return _banner(context, 'Cargando el modelo de IA…');
+          case ModelStatus.failed:
+            return _banner(
+              context,
+              'No se pudo preparar el modelo de IA; respondo con reglas.\n${model.error}',
+              action: 'Reintentar',
+              onAction: () => model.prepare(download: true),
+            );
+        }
+      },
+    );
+  }
+
+  Widget _banner(BuildContext context, String text, {String? action, VoidCallback? onAction, double? progress}) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: colors.secondaryContainer,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(text, maxLines: 4, overflow: TextOverflow.ellipsis, style: TextStyle(color: colors.onSecondaryContainer)),
+                ),
+                if (action != null) TextButton(onPressed: onAction, child: Text(action)),
+              ],
+            ),
+          ),
+          if (progress != null) LinearProgressIndicator(value: progress, minHeight: 2),
+        ],
+      ),
+    );
+  }
+}
+
+class _Bubble extends StatelessWidget {
+  const _Bubble({required this.message});
+
+  final _Message message;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final background = message.fromUser
+        ? colors.primaryContainer
+        : (message.isError ? colors.errorContainer : colors.surfaceContainerHighest);
+    final foreground = message.fromUser
+        ? colors.onPrimaryContainer
+        : (message.isError ? colors.onErrorContainer : colors.onSurface);
+    return Align(
+      alignment: message.fromUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.82),
+        decoration: BoxDecoration(color: background, borderRadius: BorderRadius.circular(12)),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SelectableText(message.text, style: TextStyle(color: foreground)),
+            if (message.note.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(message.note, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: foreground)),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}

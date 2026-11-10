@@ -1,0 +1,152 @@
+import 'package:dio/dio.dart';
+{{#hasAuth}}
+import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+{{/hasAuth}}
+
+import 'config.dart';
+import 'schema.dart';
+
+/// Error de la API ya explicado en palabras sencillas.
+class ApiException implements Exception {
+  ApiException(this.message, [this.status]);
+
+  final String message;
+  final int? status;
+
+  @override
+  String toString() => message;
+}
+
+/// Cliente de la API REST: las mismas cinco operaciones sirven para cualquier entidad.
+class Api {
+  Api._();
+
+  static final Api instance = Api._();
+
+  final Dio _dio = Dio(
+    BaseOptions(
+      baseUrl: apiUrl,
+      connectTimeout: const Duration(seconds: 15),
+      receiveTimeout: const Duration(seconds: 15),
+    ),
+  );
+
+  Future<List<Json>> list(Entity entity) => _run(() async {
+        final data = (await _dio.get<dynamic>(entity.endpoint)).data;
+        final rows = data is List ? data : (data is Map && data['content'] is List ? data['content'] as List : const []);
+        return [
+          for (final row in rows) if (row is Map) Json.from(row),
+        ];
+      });
+
+  Future<Json> get(Entity entity, String id) =>
+      _run(() async => _asJson((await _dio.get<dynamic>('${entity.endpoint}/$id')).data));
+
+  Future<Json> create(Entity entity, Json data) =>
+      _run(() async => _asJson((await _dio.post<dynamic>(entity.endpoint, data: data)).data));
+
+  Future<Json> update(Entity entity, String id, Json data) =>
+      _run(() async => _asJson((await _dio.put<dynamic>('${entity.endpoint}/$id', data: data)).data));
+
+  Future<void> delete(Entity entity, String id) =>
+      _run(() => _dio.delete<dynamic>('${entity.endpoint}/$id'));
+{{#hasAuth}}
+
+  // --- Sesión ---
+
+  static const _tokenKey = 'token';
+
+  /// Cambia al iniciar o cerrar sesión; main.dart decide con él qué pantalla mostrar.
+  final ValueNotifier<bool> loggedIn = ValueNotifier(false);
+
+  /// Recupera la sesión guardada. Se llama una vez al arrancar.
+  Future<void> init() async {
+    final prefs = await SharedPreferences.getInstance();
+    _useToken(prefs.getString(_tokenKey));
+  }
+
+  Future<void> login(String user, String password) =>
+      _startSession('/auth/login', {'email': user, 'password': password});
+
+  Future<void> register(Json data) => _startSession('/auth/register', data);
+
+  Future<void> logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_tokenKey);
+    _useToken(null);
+  }
+
+  Future<void> _startSession(String path, Json body) => _run(() async {
+        final data = (await _dio.post<dynamic>(path, data: body)).data;
+        final token = data is Map ? data['token'] : null;
+        if (token is! String || token.isEmpty) {
+          throw ApiException('El servidor no devolvió una sesión.');
+        }
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_tokenKey, token);
+        _useToken(token);
+      });
+
+  void _useToken(String? token) {
+    if (token == null || token.isEmpty) {
+      _dio.options.headers.remove('Authorization');
+      loggedIn.value = false;
+    } else {
+      _dio.options.headers['Authorization'] = 'Bearer $token';
+      loggedIn.value = true;
+    }
+  }
+{{/hasAuth}}
+
+  // --- Errores ---
+
+  Future<T> _run<T>(Future<T> Function() call) async {
+    try {
+      return await call();
+    } on DioException catch (e) {
+      final status = e.response?.statusCode;
+{{#hasAuth}}
+      // La sesión venció: se vuelve a la pantalla de inicio de sesión
+      if (status == 401 && loggedIn.value) await logout();
+{{/hasAuth}}
+      throw ApiException(_explain(e), status);
+    }
+  }
+
+  static Json _asJson(Object? data) => data is Map ? Json.from(data) : <String, dynamic>{};
+
+  static String _explain(DioException e) {
+    final response = e.response;
+    if (response == null) {
+      return 'No se pudo conectar con el servidor. Revisa la conexión y que el backend esté encendido.';
+    }
+
+    // Lo que diga el backend tiene prioridad: suele nombrar el campo que falla
+    final body = response.data;
+    if (body is Map) {
+      final errors = body['errors'];
+      if (errors is Map && errors.isNotEmpty) {
+        return errors.entries.map((entry) => '${entry.key}: ${entry.value}').join('\n');
+      }
+      if (errors is List && errors.isNotEmpty) return errors.join('\n');
+      final message = body['message'] ?? body['detail'];
+      if (message is String && message.trim().isNotEmpty) return message;
+    }
+
+    switch (response.statusCode) {
+      case 400:
+        return 'Los datos no son válidos. Revisa los campos e inténtalo de nuevo.';
+      case 401:
+        return 'Usuario o contraseña incorrectos, o la sesión venció.';
+      case 403:
+        return 'No tienes permiso para hacer esto.';
+      case 404:
+        return 'No existe ese registro.';
+      case 409:
+        return 'Ya existe un registro con esos datos.';
+      default:
+        return 'El servidor no pudo completar la operación (error ${response.statusCode}).';
+    }
+  }
+}

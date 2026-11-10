@@ -24,7 +24,7 @@ El cliente web está en el repositorio del frontend (`sw1_parcial1_frontend`).
 - **XMI 2.1** compatible con Enterprise Architect: exportación e importación (la importación asigna ids nuevos y es atómica).
 - **Generación de código** con vista previa o descarga en `.zip`:
   - **Spring Boot 3.5** (Java 21, Gradle): entidades JPA con herencia `JOINED`, relaciones 1:N y M:N, DTOs, mappers, servicios, controladores REST, autenticación JWT, migraciones Flyway, Swagger y Docker Compose con PostgreSQL.
-  - **Flutter**: Clean Architecture con BLoC, CRUD por entidad, inicio de sesión y un asistente que ejecuta un modelo local (Qwen 2.5 GGUF mediante `llama.cpp`) en el propio dispositivo.
+  - **Flutter**: app genérica y mínima, con los mismos archivos para cualquier diagrama: `lib/schema.dart` describe las clases y una sola lista y un solo formulario sirven para todas. Incluye inicio de sesión y un asistente que ejecuta un modelo local (Qwen 2.5 GGUF mediante `llama.cpp`) en el propio dispositivo, con una única llamada al modelo por mensaje.
 - **Protección básica**: límites de peticiones (login y registro 10/min, Trazo 20/min, resto 300/min), validación estricta de los cuerpos y tope de 500 clases y 1000 relaciones por diagrama.
 
 ## Tecnologías

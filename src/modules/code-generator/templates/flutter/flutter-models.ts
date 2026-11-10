@@ -15,6 +15,8 @@ export interface DartField {
   isDateOnly?: boolean;
   /** Ids de una relación M:N (p. ej. categoriaIds): List<String>. */
   isIdList?: boolean;
+  /** Clase a la que apunta el campo cuando guarda el id (o los ids) de una relación. */
+  refClassName?: string;
 }
 
 export function mapJavaTypeToDart(javaType: string): string {
@@ -102,6 +104,7 @@ export function getDartFields(meta: JavaClassMeta): DartField[] {
           isBoolean: false,
           isString: true,
           defaultValue: "''",
+          refClassName: rel.targetClassName,
         });
       }
     }
@@ -122,18 +125,12 @@ export function getDartFields(meta: JavaClassMeta): DartField[] {
         isString: false,
         defaultValue: 'const []',
         isIdList: true,
+        refClassName: rel.targetClassName,
       });
     }
   }
 
   return fields;
-}
-
-/** Expresión Dart que serializa una fecha: LocalDate sin hora, LocalDateTime completa. */
-export function dateToJsonExpr(f: DartField, access: string): string {
-  return f.isDateOnly
-    ? `${access}.toIso8601String().substring(0, 10)`
-    : `${access}.toIso8601String()`;
 }
 
 export function getPluralName(name: string): string {

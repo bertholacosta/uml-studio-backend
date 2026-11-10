@@ -1,0 +1,374 @@
+import 'dart:convert';
+
+import '../schema.dart';
+
+/// Lo que el asistente entendió de una frase.
+class Command {
+  const Command(
+    this.action, {
+    this.entity,
+    this.id = '',
+    this.data = const {},
+    this.query = '',
+    this.fields = const [],
+    this.reply = '',
+    this.fromModel = false,
+  });
+
+  /// create | list | get | update | delete | chat
+  final String action;
+  final Entity? entity;
+  final String id;
+  final Json data;
+
+  /// Texto a buscar dentro de los registros (list).
+  final String query;
+
+  /// Campos que se pidieron ver (list); vacío = el resumen de siempre.
+  final List<String> fields;
+
+  /// Respuesta de conversación (chat).
+  final String reply;
+
+  /// true si lo entendió el modelo de lenguaje; false si fueron las reglas.
+  final bool fromModel;
+
+  bool get isChat => action == 'chat';
+}
+
+// ---------------------------------------------------------------------------
+// Texto
+// ---------------------------------------------------------------------------
+
+/// Minúsculas y sin acentos, carácter por carácter: una posición en el texto
+/// plegado es la misma posición en el original.
+String fold(String text) {
+  const from = 'áéíóúüñ';
+  const to = 'aeiouun';
+  var out = text.toLowerCase();
+  for (var i = 0; i < from.length; i++) {
+    out = out.replaceAll(from[i], to[i]);
+  }
+  return out;
+}
+
+const _before = r'(?<![a-z0-9])';
+const _after = r'(?![a-z0-9])';
+
+/// Patrón de un nombre del diagrama tal como se escribe o se dicta:
+/// `fechaRegistro` y `fecha_registro` también valen como «fecha registro».
+String _namePattern(String name) {
+  final words = name
+      .replaceAllMapped(RegExp(r'([a-z0-9])([A-Z])'), (m) => '${m[1]} ${m[2]}')
+      .split(RegExp(r'[\s_-]+'))
+      .where((word) => word.isNotEmpty)
+      .map((word) => RegExp.escape(fold(word)));
+  return words.join(r'[\s_-]*');
+}
+
+RegExp _word(String pattern) => RegExp('$_before(?:$pattern)$_after');
+
+class _Mention {
+  const _Mention(this.entity, this.start, this.end);
+
+  final Entity entity;
+  final int start;
+  final int end;
+}
+
+/// La entidad nombrada en el texto (singular o plural). Si hay varias, la de
+/// nombre más largo: «detalle pedido» gana a «pedido».
+_Mention? _findEntity(String folded) {
+  _Mention? best;
+  for (final entity in entities) {
+    for (final name in {entity.singular, entity.name}) {
+      final match = _word('${_namePattern(name)}(?:es|s)?').firstMatch(folded);
+      if (match == null) continue;
+      if (best == null || match.end - match.start > best.end - best.start) {
+        best = _Mention(entity, match.start, match.end);
+      }
+    }
+  }
+  return best;
+}
+
+/// Entidades que la frase nombra; el asistente solo le describe esas al modelo.
+List<Entity> entitiesMentioned(String text) {
+  final folded = fold(text);
+  return [
+    for (final entity in entities)
+      if ({entity.singular, entity.name}.any((name) => _word('${_namePattern(name)}(?:es|s)?').hasMatch(folded)))
+        entity,
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Reglas: entienden las órdenes habituales sin usar el modelo
+// ---------------------------------------------------------------------------
+
+final _verbs = <String, RegExp>{
+  'create': _word('crea|crear|creame|registra|registrar|registrame|agrega|agregar|agregame|anade|anadir|inserta|insertar|guarda|guardar'),
+  'update': _word('actualiza|actualizar|actualizame|modifica|modificar|cambia|cambiar|cambiale|edita|editar|reemplaza|reemplazar|corrige|corregir'),
+  'delete': _word('elimina|eliminar|eliminame|borra|borrar|borrame|quita|quitar|remueve|remover'),
+  'list': _word('lista|listar|listame|muestra|mostrar|muestrame|busca|buscar|buscame|consulta|consultar|ver|dame|dime|trae|traer|obten|obtener|cual|cuales|cuantos|cuantas|que'),
+};
+
+final _newWord = _word('nuevo|nueva');
+final _uuid = RegExp(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}');
+final _idPhrase = RegExp('$_before(?:con\\s+)?(?:el\\s+)?(?:id|identificador)\\s*[:=#]?\\s*([a-z0-9_-]*\\d[a-z0-9_-]*)');
+final _number = RegExp(r'-?\d+(?:[.,]\d+)?');
+final _email = RegExp(r'[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}');
+
+const _stopWords = {
+  'a', 'al', 'con', 'cual', 'cuales', 'cuantos', 'cuantas', 'datos', 'de', 'del', 'el', 'en', 'es', 'la', 'las',
+  'lo', 'los', 'me', 'mi', 'mis', 'para', 'por', 'que', 'se', 'sin', 'solo', 'su', 'sus', 'tiene', 'todas',
+  'todos', 'un', 'una', 'unas', 'unos', 'y', 'informacion', 'registrado', 'registrados', 'llama', 'llamado',
+};
+
+/// Interpreta una frase con reglas fijas. Es instantáneo y funciona sin el modelo.
+Command interpret(String text) {
+  var folded = fold(text);
+
+  String? action;
+  for (final verb in _verbs.entries) {
+    if (verb.value.hasMatch(folded)) {
+      action = verb.key;
+      break;
+    }
+  }
+  // «nuevo cliente…» también es crear, pero solo si no hay otro verbo
+  if (action == null && _newWord.hasMatch(folded)) action = 'create';
+  final mention = _findEntity(folded);
+  if (action == null || mention == null) return const Command('chat');
+  final entity = mention.entity;
+
+  // El id: un UUID, «id 12» o el número que sigue a la entidad («el cliente 12»)
+  var id = '';
+  final blanks = <List<int>>[];
+  final uuid = _uuid.firstMatch(folded);
+  final phrase = _idPhrase.firstMatch(folded);
+  final trailing = RegExp(r'\s*#?\s*(\d+)(?![\d.,]*\d)').matchAsPrefix(folded, mention.end);
+  if (uuid != null) {
+    id = text.substring(uuid.start, uuid.end);
+    blanks.add([uuid.start, uuid.end]);
+    if (phrase != null) blanks.add([phrase.start, phrase.end]);
+  } else if (phrase != null) {
+    id = phrase[1]!;
+    blanks.add([phrase.start, phrase.end]);
+  } else if (trailing != null && action != 'create') {
+    id = trailing[1]!;
+    blanks.add([trailing.start, trailing.end]);
+  }
+
+  // Fuera la entidad (con su artículo) y el id: lo que queda son campos y valores
+  final article = RegExp(r'(?:(?:del|de la|de el|al|el|la|los|las|un|una)\s+)$').firstMatch(folded.substring(0, mention.start));
+  blanks.add([article?.start ?? mention.start, mention.end]);
+  for (final verb in (_verbs[action]!.allMatches(folded)).followedBy(_newWord.allMatches(folded))) {
+    blanks.add([verb.start, verb.end]);
+  }
+  var rest = text;
+  for (final range in blanks) {
+    rest = rest.replaceRange(range[0], range[1], ' ' * (range[1] - range[0]));
+  }
+  folded = fold(rest);
+
+  switch (action) {
+    case 'delete':
+      return Command('delete', entity: entity, id: id);
+    case 'list':
+      if (id.isNotEmpty) return Command('get', entity: entity, id: id);
+      final fields = [
+        for (final occurrence in _fieldOccurrences(entity, folded)) occurrence.field.name,
+      ];
+      return Command('list', entity: entity, fields: fields, query: _searchQuery(entity, folded));
+    default:
+      return Command(action, entity: entity, id: id, data: _extractData(entity, rest, folded));
+  }
+}
+
+class _Occurrence {
+  const _Occurrence(this.field, this.start, this.end);
+
+  final Field field;
+  final int start;
+  final int end;
+}
+
+/// Dónde se nombra cada campo, en orden. Si dos nombres chocan gana el más
+/// largo: «nombre completo» no se confunde con «nombre».
+List<_Occurrence> _fieldOccurrences(Entity entity, String folded) {
+  final found = <_Occurrence>[];
+  for (final field in entity.editable) {
+    final match = _word(_namePattern(field.name)).firstMatch(folded);
+    if (match != null) found.add(_Occurrence(field, match.start, match.end));
+  }
+  found.sort((a, b) => a.start != b.start ? a.start - b.start : (b.end - b.start) - (a.end - a.start));
+  final kept = <_Occurrence>[];
+  for (final occurrence in found) {
+    if (kept.isEmpty || occurrence.start >= kept.last.end) kept.add(occurrence);
+  }
+  return kept;
+}
+
+/// El valor de cada campo es lo que va desde su nombre hasta el siguiente campo:
+/// «nombre Juan Pérez, email juan@correo.com y teléfono 777».
+Json _extractData(Entity entity, String text, String folded) {
+  final data = <String, dynamic>{};
+  final occurrences = _fieldOccurrences(entity, folded);
+  for (var i = 0; i < occurrences.length; i++) {
+    final field = occurrences[i].field;
+    final end = i + 1 < occurrences.length ? occurrences[i + 1].start : text.length;
+    final value = _castValue(field, _cleanValue(text.substring(occurrences[i].end, end)));
+    if (value != null) data[field.name] = value;
+  }
+
+  // Un correo se reconoce aunque no se diga «email»
+  for (final field in entity.editable) {
+    if (data.containsKey(field.name)) continue;
+    if (!const {'email', 'correo', 'mail', 'correoelectronico'}.contains(fold(field.name))) continue;
+    final match = _email.firstMatch(folded);
+    if (match != null) data[field.name] = text.substring(match.start, match.end);
+  }
+  return data;
+}
+
+String _cleanValue(String raw) {
+  // Una coma corta el valor, salvo la de un decimal («1200,50»)
+  var value = raw.split(RegExp(r',(?!\d)|[;\n]')).first;
+  final lead = RegExp(r'^(?:\s|[:=]|(?:es|sea|sera|por|a|en|de|con|como|igual)(?![a-z0-9]))+').firstMatch(fold(value));
+  if (lead != null) value = value.substring(lead.end);
+  final tail = RegExp(r'(?:\s|[.]|(?<![a-z0-9])(?:y|e|o|con|el|la|los|las|su|del|de|por|para|al|a))+$').firstMatch(fold(value));
+  if (tail != null) value = value.substring(0, tail.start);
+  value = value.trim();
+  if (value.length > 1 && (value.startsWith('"') || value.startsWith("'")) && value.endsWith(value[0])) {
+    value = value.substring(1, value.length - 1).trim();
+  }
+  return value;
+}
+
+/// Pasa un texto al tipo del campo; de «300 bolivianos» se queda con 300.
+Object? _castValue(Field field, String value) {
+  if (value.isEmpty) return null;
+  if (field.isNumber) {
+    final number = _number.firstMatch(value);
+    return number == null ? null : field.parse(number[0]!);
+  }
+  return field.parse(value);
+}
+
+/// Lo que queda de la frase al quitar verbos, campos y palabras vacías:
+/// de «busca al cliente Juan Pérez» queda «juan perez».
+String _searchQuery(Entity entity, String folded) {
+  var rest = folded;
+  for (final field in entity.fields) {
+    rest = rest.replaceAll(_word(_namePattern(field.name)), ' ');
+  }
+  final words = rest
+      .split(RegExp(r'[^a-z0-9@._-]+'))
+      .where((word) => word.length > 1 && !_stopWords.contains(word))
+      .toList();
+  return words.join(' ');
+}
+
+// ---------------------------------------------------------------------------
+// Respuesta del modelo de lenguaje
+// ---------------------------------------------------------------------------
+
+const _actions = {
+  'create': 'create', 'crear': 'create', 'registrar': 'create', 'add': 'create',
+  'list': 'list', 'listar': 'list', 'buscar': 'list', 'search': 'list', 'read': 'list',
+  'get': 'get', 'consultar': 'get', 'obtener': 'get',
+  'update': 'update', 'actualizar': 'update', 'modificar': 'update',
+  'delete': 'delete', 'eliminar': 'delete', 'borrar': 'delete',
+  'chat': 'chat',
+};
+
+/// Convierte la línea JSON del modelo en una orden, comprobándola contra el
+/// diagrama. Devuelve null si no sirve; entonces deciden las reglas.
+Command? commandFromModel(String output, String userText) {
+  final json = _firstJson(output);
+  if (json == null) return null;
+  final action = _actions[fold('${json['action'] ?? ''}').trim()];
+  if (action == null) return null;
+  if (action == 'chat') {
+    return Command('chat', reply: '${json['reply'] ?? json['message'] ?? ''}'.trim(), fromModel: true);
+  }
+
+  final folded = fold(userText);
+  final entity = (_findEntity(fold('${json['entity'] ?? ''}')) ?? _findEntity(folded))?.entity;
+  if (entity == null) return null;
+
+  // Solo valen los datos que la persona escribió: un modelo pequeño a veces inventa
+  final numbers = {
+    for (final match in _number.allMatches(folded)) double.tryParse(match[0]!.replaceAll(',', '.')),
+  };
+  bool said(Object? value) {
+    if (value is bool) return true;
+    if (value is num) return numbers.contains(value.toDouble());
+    if (value is List) return value.every(said);
+    final text = fold('$value').trim();
+    return text.isNotEmpty && folded.contains(text);
+  }
+
+  final data = <String, dynamic>{};
+  final rawData = json['data'];
+  if (rawData is Map) {
+    for (final field in entity.editable) {
+      for (final entry in rawData.entries) {
+        if (fold('${entry.key}').replaceAll(RegExp(r'[\s_-]'), '') != fold(field.name).replaceAll('_', '')) continue;
+        final raw = entry.value;
+        final value = raw is String || raw is num ? _castValue(field, '$raw') : (raw is bool && field.type == 'bool' ? raw : null);
+        if (value != null && said(value)) data[field.name] = value;
+      }
+    }
+  }
+
+  final rawFields = json['fields'];
+  final id = '${json['id'] ?? ''}'.trim();
+  final query = '${json['query'] ?? ''}'.trim();
+  return Command(
+    action,
+    entity: entity,
+    id: said(id) ? id : '',
+    data: data,
+    query: said(query) ? query : '',
+    fields: [
+      if (rawFields is List)
+        for (final field in entity.fields)
+          if (rawFields.any((name) => fold('$name') == fold(field.name))) field.name,
+    ],
+    fromModel: true,
+  );
+}
+
+/// El primer objeto JSON del texto. Si la respuesta se cortó, prueba a cerrarlo.
+Json? _firstJson(String text) {
+  final start = text.indexOf('{');
+  if (start < 0) return null;
+  final end = text.lastIndexOf('}');
+  final body = end > start ? text.substring(start, end + 1) : text.substring(start);
+  for (final closing in const ['', '}', '"}', '}}', '"}}']) {
+    try {
+      final decoded = jsonDecode(body + closing);
+      if (decoded is Map) return Json.from(decoded);
+    } on FormatException {
+      // Se prueba con el siguiente cierre
+    }
+  }
+  return null;
+}
+
+/// Completa lo que el modelo no sacó con lo que encontraron las reglas, cuando
+/// los dos hablan de la misma entidad.
+Command complete(Command model, Command rules) {
+  if (model.isChat || rules.isChat || model.entity != rules.entity) return model;
+  return Command(
+    model.action,
+    entity: model.entity,
+    id: model.id.isNotEmpty ? model.id : rules.id,
+    data: {...rules.data, ...model.data},
+    query: model.query.isNotEmpty ? model.query : rules.query,
+    fields: model.fields.isNotEmpty ? model.fields : rules.fields,
+    fromModel: true,
+  );
+}

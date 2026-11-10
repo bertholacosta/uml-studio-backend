@@ -1,0 +1,144 @@
+import 'package:flutter/material.dart';
+
+import '../api.dart';
+import '../schema.dart';
+import 'record_form.dart';
+
+/// Lista de registros de una entidad. Sirve para cualquier clase del diagrama.
+class RecordsScreen extends StatefulWidget {
+  const RecordsScreen({super.key, required this.entity});
+
+  final Entity entity;
+
+  @override
+  State<RecordsScreen> createState() => _RecordsScreenState();
+}
+
+class _RecordsScreenState extends State<RecordsScreen> {
+  late Future<List<Json>> _records = Api.instance.list(widget.entity);
+
+  Entity get entity => widget.entity;
+
+  Future<void> _reload() async {
+    final records = Api.instance.list(entity);
+    setState(() => _records = records);
+    await records.catchError((Object _) => <Json>[]);
+  }
+
+  Future<void> _openForm([Json? record]) async {
+    final saved = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (context) => RecordForm(entity: entity, record: record)),
+    );
+    if (saved == true) await _reload();
+  }
+
+  Future<void> _delete(Json record) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('¿Eliminar "${entity.titleOf(record)}"?'),
+        content: const Text('Esta acción no se puede deshacer.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Eliminar')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await Api.instance.delete(entity, entity.idOf(record));
+      await _reload();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+
+  /// Hasta dos datos del registro, además del título, para reconocerlo en la lista.
+  String _summary(Json record) {
+    final parts = <String>[];
+    for (final field in entity.editable) {
+      if (field.secret || field.name == entity.title || field.type == 'ids') continue;
+      final value = record[field.name];
+      if (value == null || '$value'.isEmpty) continue;
+      parts.add('${field.name}: $value');
+      if (parts.length == 2) break;
+    }
+    return parts.join(' · ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(entity.name)),
+      floatingActionButton: FloatingActionButton(
+        tooltip: 'Nuevo',
+        onPressed: _openForm,
+        child: const Icon(Icons.add),
+      ),
+      body: FutureBuilder<List<Json>>(
+        future: _records,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return _Notice(text: '${snapshot.error}', action: 'Reintentar', onAction: _reload);
+          }
+          final records = snapshot.data ?? const [];
+          if (records.isEmpty) {
+            return _Notice(text: 'Todavía no hay ${entity.plural}.', action: 'Actualizar', onAction: _reload);
+          }
+          return RefreshIndicator(
+            onRefresh: _reload,
+            child: ListView.separated(
+              padding: const EdgeInsets.only(bottom: 88),
+              itemCount: records.length,
+              separatorBuilder: (context, index) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final record = records[index];
+                final summary = _summary(record);
+                return ListTile(
+                  title: Text(entity.titleOf(record)),
+                  subtitle: summary.isEmpty ? null : Text(summary, maxLines: 2, overflow: TextOverflow.ellipsis),
+                  onTap: () => _openForm(record),
+                  trailing: IconButton(
+                    tooltip: 'Eliminar',
+                    icon: const Icon(Icons.delete_outline),
+                    onPressed: () => _delete(record),
+                  ),
+                );
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _Notice extends StatelessWidget {
+  const _Notice({required this.text, required this.action, required this.onAction});
+
+  final String text;
+  final String action;
+  final VoidCallback onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(text, textAlign: TextAlign.center),
+            const SizedBox(height: 12),
+            OutlinedButton(onPressed: onAction, child: Text(action)),
+          ],
+        ),
+      ),
+    );
+  }
+}

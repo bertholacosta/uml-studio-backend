@@ -41,7 +41,7 @@ export class CodeGeneratorService {
       };
     }
 
-    // 2. Generar archivos de Flutter Clean Architecture
+    // 2. Generar la app Flutter genérica (lee el diagrama de lib/schema.dart)
     if (platform === 'flutter') {
       const flutterFiles =
         this.flutterTemplateEngine.generateFlutterProjectFiles(context, '');
@@ -73,7 +73,7 @@ export class CodeGeneratorService {
 
 Solución de software completa autogenerada a partir de modelo de clases UML:
 1. **Backend REST:** Spring Boot 3.5 + Java 21 + PostgreSQL 16 + Flyway Migrations + Swagger UI (\`backend/\`)
-2. **Frontend Móvil:** Flutter con Clean Architecture + BLoC + Dio + GetIt (\`mobile_flutter/\`)
+2. **Frontend Móvil:** app Flutter genérica (CRUD dirigido por \`lib/schema.dart\`) con asistente de IA local (\`mobile_flutter/\`)
 
 ---
 

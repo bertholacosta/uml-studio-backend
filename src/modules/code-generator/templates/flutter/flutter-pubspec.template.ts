@@ -7,5 +7,5 @@ export function renderFlutterPubspec(context: ProjectContext): string {
   const template = loadTemplate(
     path.join(__dirname, 'flutter-pubspec.template.mustache'),
   );
-  return renderMustache(template, { appName });
+  return renderMustache(template, { appName, hasAuth: !!context.hasAuth });
 }

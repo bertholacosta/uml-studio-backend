@@ -1,0 +1,12 @@
+/// Nombre de la aplicación.
+const String appName = '{{projectName}}';
+
+/// Dirección de la API REST del backend Spring Boot.
+///
+/// - Teléfono por cable USB: `adb reverse tcp:{{port}} tcp:{{port}}` y se deja como está.
+/// - Emulador de Android: `--dart-define=API_URL=http://10.0.2.2:{{port}}/api/v1`
+/// - Backend publicado: `--dart-define=API_URL=https://mi-servidor/api/v1`
+const String apiUrl = String.fromEnvironment(
+  'API_URL',
+  defaultValue: 'http://localhost:{{port}}/api/v1',
+);

@@ -1,99 +1,86 @@
-# 📱 {{projectName}} (Flutter Mobile App)
+# {{projectName}} · App móvil
 
-Aplicación móvil desarrollada en **Flutter** con arquitectura limpia (**Clean Architecture**), patrón de gestión de estado **BLoC** (`flutter_bloc`), cliente HTTP **Dio**, inyección de dependencias con **GetIt** y **Asistente de IA Local** que corre dentro del teléfono (Qwen2.5 con llama.cpp + intérprete de reglas de respaldo).
+App Flutter generada a partir del diagrama UML. Es **una app genérica**: tiene los mismos archivos para cualquier diagrama y lo único propio de este proyecto es `lib/schema.dart`, que describe sus clases y campos. Las pantallas y el asistente de IA leen de ahí.
 
----
+Clases de este diagrama:
 
-## 🤖 Asistente de IA Local Integrado
+{{#classes}}
+- {{className}}
+{{/classes}}
 
-La aplicación incluye un **Bot conversacional inteligente** que permite interactuar con el backend mediante lenguaje natural, por texto o por voz, sin necesidad de llenar formularios manualmente.
-
-### 🌟 Capacidades del Asistente:
-1. **Registro / Creación Rápida:**
-   - `"Registra un usuario con el nombre juan, email juan@gmail.com, password jose"`
-   - `"Crea un producto con nombre Laptop, precio 1200.50"`
-2. **Consultas y Listados:**
-   - `"Listar usuarios"`
-   - `"Busca al usuario Jose"`
-   - `"Muestra el producto con id 123"`
-3. **Actualización por ID:**
-   - `"Actualiza el producto con id 123, precio 999"`
-4. **Eliminación por ID:**
-   - `"Eliminar usuario con id 123"`
-
-El asistente ejecuta la orden directamente contra el backend: no pide confirmación antes de crear, actualizar o eliminar.
-
-### ⚡ Cómo interpreta las órdenes (todo dentro del dispositivo):
-* **Nivel 1 (Qwen2.5 On-Device):** el modelo `qwen2.5-0.5b-instruct` (GGUF, unos 400 MB) corre en el propio teléfono con `lib_llama_cpp` y convierte la frase en una acción estructurada. No viaja dentro de la app: se descarga desde Hugging Face la primera vez que se abre el asistente (hace falta conexión y espacio libre) y queda guardado para los siguientes usos. La pantalla del chat muestra el avance de la descarga y permite reintentarla.
-* **Nivel 2 (Intérprete de reglas de respaldo):** mientras el modelo se descarga, si la descarga falla o si el modelo no entiende la orden, se usa un intérprete determinista de frases en español que reconoce la acción, la entidad y los campos.
-
-### 🎙 Dictado por voz
-El botón del micrófono usa el reconocedor de voz del sistema (`speech_to_text`), en español si el teléfono lo tiene instalado. Requiere el permiso de micrófono; que funcione sin red depende del paquete de idioma del dispositivo.
-
----
-
-## 🏗 Estructura del Proyecto (Clean Architecture)
+## Estructura
 
 ```text
 lib/
-├── core/                         # Núcleo reutilizable
-│   ├── constants/api_constants.dart
-│   ├── errors/exceptions.dart & failures.dart
-│   ├── network/api_client.dart   # Cliente Dio con interceptores
-│   └── theme/app_theme.dart      # Tema Material 3
-│
-├── features/                     # Módulos por entidad del diagrama UML
-│   ├── ai_assistant/             # 🤖 Bot de IA Local (BLoC + Service + Chat UI)
-│   │   ├── data/ (models, services)
-│   │   └── presentation/ (bloc, pages)
-{{#featureTrees}}
-│   ├── {{snake}}/
-│   │   ├── data/ (datasources, models, repositories)
-│   │   ├── domain/ (entities, repositories, usecases)
-│   │   └── presentation/ (bloc, pages, widgets)
-{{/featureTrees}}
-│
-├── injection_container.dart      # Configuración de dependencias (GetIt)
-└── main.dart                     # Punto de entrada y MultiBlocProvider
+├── schema.dart                 clases y campos del diagrama (lo único que cambia)
+├── config.dart                 nombre de la app y dirección de la API
+├── api.dart                    cliente REST: listar, ver, crear, actualizar y eliminar{{#hasAuth}}, y la sesión{{/hasAuth}}
+├── main.dart
+├── screens/
+│   ├── home_screen.dart        una fila por clase y el acceso al asistente
+{{#hasAuth}}
+│   ├── login_screen.dart       iniciar sesión y registrarse
+{{/hasAuth}}
+│   ├── records_screen.dart     lista de registros de cualquier clase
+│   └── record_form.dart        formulario de cualquier clase
+└── assistant/
+    ├── local_model.dart        descarga, carga y uso del modelo en el dispositivo
+    ├── interpreter.dart        reglas de respaldo y validación de lo que dice el modelo
+    ├── assistant.dart          entiende la orden y la ejecuta contra la API
+    └── assistant_screen.dart   el chat
 ```
 
----
+No hay capas, inyección de dependencias ni gestor de estado: cada pantalla es un `StatefulWidget` que llama a `Api`. El formulario elige el control por el tipo del campo (texto, número, interruptor, fecha, y una lista desplegable para las relaciones).
 
-## 🔌 Conexión con el Backend Spring Boot (Puerto {{port}})
+## Asistente de IA local
 
-### 📲 Opción 1: Dispositivo Físico Android por Cable USB (Recomendado)
-Conecta tu teléfono Android a la PC por cable USB con la **Depuración USB** activada y ejecuta en tu terminal:
+Se le escribe o se le dicta una orden y la ejecuta contra el backend:
+
+- `Registra {{singular}} con {{field}} …`
+- `Lista {{plural}}` · `Busca {{singular}} …` · `Muestra {{singular}} con id 12`
+- `Actualiza {{singular}} con id 12, {{field}} …`
+- `Elimina {{singular}} con id 12` (pide confirmación)
+
+Quién entiende la orden:
+
+1. **Qwen2.5 0.5B dentro del teléfono** (`lib_llama_cpp`). El modelo (unos 400 MB) no viaja en la app: el asistente ofrece descargarlo de Hugging Face la primera vez y queda guardado.
+2. **Reglas de respaldo**: mientras el modelo no está, si falla o si no acierta, un intérprete de frases en español resuelve las órdenes habituales al instante.
+
+Bajo cada respuesta se ve quién la entendió y cuánto tardó.
+
+### Por qué es rápido
+
+La librería vuelve a evaluar el mensaje completo en cada petición, así que el tiempo depende de cuántos tokens entran y salen. La app está hecha para que sean pocos:
+
+- **Una sola llamada al modelo por mensaje.** Validar, completar datos, ejecutar y explicar errores es código normal.
+- **Instrucción mínima.** Al modelo solo se le describen las entidades que la frase nombra, no todo el diagrama.
+- **Contexto de 1024 tokens** y respuesta de una línea JSON de 128 tokens como mucho.
+- **Hilos = núcleos rápidos** (entre 2 y 4) y sin azar (temperatura 0).
+- **Carga anticipada**: el modelo se carga al abrir el asistente, no con el primer mensaje.
+
+Lo que el modelo devuelve se comprueba contra `schema.dart` y contra la frase: un dato que la persona no escribió se descarta.
+
+El dictado usa el reconocedor de voz del sistema (`speech_to_text`); que funcione sin red depende del paquete de idioma del teléfono.
+
+## Conexión con el backend (puerto {{port}})
+
+La dirección de la API está en `lib/config.dart` y se cambia al compilar con `--dart-define`:
 
 ```bash
+# Teléfono por cable USB (depuración USB activada)
 adb reverse tcp:{{port}} tcp:{{port}}
+flutter run
+
+# Emulador de Android
+flutter run --dart-define=API_URL=http://10.0.2.2:{{port}}/api/v1
+
+# Backend publicado
+flutter run --dart-define=API_URL=https://mi-servidor/api/v1
 ```
 
-Esto reenviará las peticiones de `http://localhost:{{port}}` en tu teléfono directamente a tu PC.
+## Puesta en marcha
 
-### 💻 Opción 2: Emulador de Android Studio
-El emulador de Android mapea el localhost de tu PC a la IP especial: `http://10.0.2.2:{{port}}/api/v1`.
-
----
-
-## 🚀 Ejecución de la Aplicación
-
-1. Instalar las dependencias de Flutter:
 ```bash
 flutter pub get
-```
-
-2. Ejecutar la aplicación en tu dispositivo o emulador:
-```bash
 flutter run
 ```
-
----
-
-## ✨ Módulos y Pantallas Generadas
-
-| Módulo / Entidad | Capas Clean Architecture | Pantalla Principal |
-| :--- | :--- | :--- |
-| **🤖 Asistente IA** | Data, Presentation (BLoC) | `AiAssistantPage` |
-{{#crudModules}}
-| **{{className}}** | Data, Domain, Presentation (BLoC) | `{{className}}ListPage` & `{{className}}FormPage` |
-{{/crudModules}}

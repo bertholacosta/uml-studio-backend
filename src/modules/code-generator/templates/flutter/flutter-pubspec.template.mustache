@@ -1,5 +1,5 @@
 name: {{appName}}
-description: "Aplicación móvil Flutter con Clean Architecture y BLoC autogenerada a partir de modelo UML"
+description: "App Flutter generada a partir de un diagrama UML: CRUD genérico y asistente de IA local"
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -9,31 +9,21 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  
-  # State Management
-  flutter_bloc: ^9.1.1
-  equatable: ^2.0.7
 
-  # Network & REST API
+  # API REST del backend
   dio: ^5.11.1
+{{#hasAuth}}
 
-  # Dependency Injection & Functional Programming
-  get_it: ^9.3.0
-  dartz: ^0.10.1
+  # Sesión guardada entre un uso y otro
   shared_preferences: ^2.5.6
+{{/hasAuth}}
 
-  # UI, Fonts & Formatting
-  google_fonts: ^8.1.0
-  intl: ^0.20.3
-  cupertino_icons: ^1.0.8
-
-  # Speech to Text (Audio / Voz para Asistente IA)
-  speech_to_text: ^7.5.0
-
-  # Local LLM Inference (Qwen2.5 on-device via llama.cpp)
-  path_provider: ^2.1.6
+  # Asistente: modelo de lenguaje en el dispositivo (Qwen2.5 con llama.cpp)
   lib_llama_cpp: ^0.7.5
-  flutter_markdown_plus: ^1.0.12
+  path_provider: ^2.1.6
+
+  # Asistente: dictado por voz
+  speech_to_text: ^7.5.0
 
 dev_dependencies:
   flutter_test:

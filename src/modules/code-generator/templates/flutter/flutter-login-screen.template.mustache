@@ -1,0 +1,135 @@
+import 'package:flutter/material.dart';
+
+import '../api.dart';
+import '../config.dart';
+import '../schema.dart';
+
+/// Inicio de sesión y registro en una sola pantalla.
+/// Al entrar, main.dart cambia solo a la pantalla de inicio.
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _user = TextEditingController();
+  final _password = TextEditingController();
+
+  /// Datos de la clase {{userClassName}} que pide el registro, además de la contraseña.
+  final _profile = <Field, TextEditingController>{
+    for (final field in entityNamed('{{userClassName}}')?.editable ?? const <Field>[])
+      if (!field.secret && field.ref == null && field.type != 'ids') field: TextEditingController(),
+  };
+
+  bool _registering = false;
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _user.dispose();
+    _password.dispose();
+    for (final controller in _profile.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _busy = true);
+    try {
+      if (_registering) {
+        await Api.instance.register({
+          for (final entry in _profile.entries)
+            if (entry.key.parse(entry.value.text) != null) entry.key.name: entry.key.parse(entry.value.text),
+          'password': _password.text,
+        });
+      } else {
+        await Api.instance.login(_user.text.trim(), _password.text);
+      }
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  String? _requiredText(String? text) => (text ?? '').trim().isEmpty ? 'Este campo es obligatorio' : null;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(appName, style: Theme.of(context).textTheme.headlineMedium, textAlign: TextAlign.center),
+                    const SizedBox(height: 4),
+                    Text(
+                      _registering ? 'Crea tu cuenta' : 'Inicia sesión',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 24),
+                    if (_registering)
+                      for (final entry in _profile.entries) ...[
+                        TextFormField(
+                          controller: entry.value,
+                          keyboardType: entry.key.isNumber ? TextInputType.number : TextInputType.text,
+                          decoration: InputDecoration(
+                            labelText: entry.key.name,
+                            hintText: entry.key.type == 'date' ? 'aaaa-mm-dd' : null,
+                          ),
+                          validator: _requiredText,
+                        ),
+                        const SizedBox(height: 16),
+                      ]
+                    else ...[
+                      TextFormField(
+                        controller: _user,
+                        keyboardType: TextInputType.emailAddress,
+                        decoration: const InputDecoration(labelText: 'Correo o usuario'),
+                        validator: _requiredText,
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    TextFormField(
+                      controller: _password,
+                      obscureText: true,
+                      decoration: const InputDecoration(labelText: 'Contraseña'),
+                      validator: (text) {
+                        if ((text ?? '').isEmpty) return 'Este campo es obligatorio';
+                        if (_registering && text!.length < 6) return 'Al menos 6 caracteres';
+                        return null;
+                      },
+                      onFieldSubmitted: (_) => _submit(),
+                    ),
+                    const SizedBox(height: 24),
+                    FilledButton(
+                      onPressed: _busy ? null : _submit,
+                      child: Text(_busy ? 'Un momento…' : (_registering ? 'Registrarme' : 'Entrar')),
+                    ),
+                    TextButton(
+                      onPressed: _busy ? null : () => setState(() => _registering = !_registering),
+                      child: Text(_registering ? 'Ya tengo cuenta' : 'Crear una cuenta'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

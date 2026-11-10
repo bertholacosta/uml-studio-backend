@@ -1,0 +1,160 @@
+import '../api.dart';
+import '../schema.dart';
+import 'interpreter.dart';
+import 'local_model.dart';
+
+/// Respuesta del asistente a un mensaje.
+class Reply {
+  const Reply(this.text, {this.isError = false});
+
+  final String text;
+  final bool isError;
+}
+
+/// Entiende una orden en lenguaje natural y la ejecuta contra la API.
+///
+/// Usa el modelo local como mucho UNA vez por mensaje, con la instrucción más
+/// corta posible; todo lo demás (validar, completar, ejecutar, explicar errores)
+/// es código normal, que no cuesta tiempo.
+class Assistant {
+  /// Tope de caracteres para describirle las entidades al modelo.
+  static const _schemaBudget = 900;
+
+  /// Entiende la frase: primero el modelo local y, si no está listo o no acierta,
+  /// las reglas.
+  Future<Command> understand(String text) async {
+    final rules = interpret(text);
+    final model = LocalModel.instance;
+    if (!model.isReady) return rules;
+    try {
+      final output = await model.generate(
+        system: _instruction(text),
+        user: text.length > 300 ? text.substring(0, 300) : text,
+      );
+      final command = commandFromModel(output, text);
+      // Si el modelo conversa donde las reglas ven una orden clara, mandan las reglas
+      if (command == null || (command.isChat && !rules.isChat)) return rules;
+      return complete(command, rules);
+    } catch (_) {
+      return rules;
+    }
+  }
+
+  /// La instrucción lleva solo las entidades que la frase nombra: como el modelo
+  /// relee todo en cada mensaje, cada línea de menos es tiempo de menos.
+  String _instruction(String text) {
+    final mentioned = entitiesMentioned(text);
+    final schema = StringBuffer();
+    for (final entity in mentioned.isEmpty ? entities : mentioned) {
+      final fields = entity.editable.map((field) => field.name).join(', ');
+      final line = '${entity.singular}: $fields\n';
+      // Si no caben los campos de todas, del resto va solo el nombre
+      schema.write(schema.length + line.length <= _schemaBudget ? line : '${entity.singular}\n');
+      if (schema.length > _schemaBudget + 300) break;
+    }
+    return 'Convierte la orden del usuario en UNA sola linea JSON, sin explicaciones.\n'
+        'Formatos:\n'
+        '{"action":"create","entity":"E","data":{"campo":"valor"}}\n'
+        '{"action":"list","entity":"E","query":"texto a buscar","fields":["campo"]}\n'
+        '{"action":"get","entity":"E","id":"ID"}\n'
+        '{"action":"update","entity":"E","id":"ID","data":{"campo":"valor"}}\n'
+        '{"action":"delete","entity":"E","id":"ID"}\n'
+        '{"action":"chat","reply":"respuesta breve en español"}\n'
+        '"query" y "fields" son opcionales. Copia los valores tal como los escribe el usuario.\n'
+        'Entidades y campos:\n'
+        '$schema';
+  }
+
+  /// Ejecuta la orden contra el backend y la cuenta en palabras.
+  Future<Reply> run(Command command) async {
+    final entity = command.entity;
+    if (command.isChat || entity == null) {
+      return Reply(command.reply.isNotEmpty ? command.reply : help);
+    }
+    try {
+      switch (command.action) {
+        case 'create':
+          if (command.data.isEmpty) {
+            return Reply('¿Con qué datos? Campos de ${entity.singular}: ${_fieldNames(entity)}.', isError: true);
+          }
+          final created = await Api.instance.create(entity, command.data);
+          return Reply('Listo, registré ${entity.singular}:\n${_details(entity, {...command.data, ...created})}');
+
+        case 'update':
+          if (command.id.isEmpty) return _needsId(entity, 'actualizar');
+          if (command.data.isEmpty) {
+            return Reply('¿Qué cambio? Campos de ${entity.singular}: ${_fieldNames(entity)}.', isError: true);
+          }
+          await Api.instance.update(entity, command.id, command.data);
+          return Reply('Listo, actualicé ${entity.singular} ${command.id}:\n${_details(entity, command.data)}');
+
+        case 'delete':
+          if (command.id.isEmpty) return _needsId(entity, 'eliminar');
+          await Api.instance.delete(entity, command.id);
+          return Reply('Listo, eliminé ${entity.singular} ${command.id}.');
+
+        case 'get':
+          if (command.id.isEmpty) return _needsId(entity, 'consultar');
+          return Reply(_details(entity, await Api.instance.get(entity, command.id)));
+
+        default:
+          return await _list(entity, command);
+      }
+    } on ApiException catch (e) {
+      return Reply(e.message, isError: true);
+    }
+  }
+
+  Future<Reply> _list(Entity entity, Command command) async {
+    var records = await Api.instance.list(entity);
+    if (command.query.isNotEmpty) {
+      final words = fold(command.query).split(' ');
+      records = [
+        for (final record in records)
+          if (words.every((word) => record.values.any((value) => fold('$value').contains(word)))) record,
+      ];
+    }
+    if (records.isEmpty) {
+      return Reply(command.query.isEmpty ? 'No hay ${entity.plural} todavía.' : 'No encontré ${entity.plural} con "${command.query}".');
+    }
+    // Uno solo: se muestra entero (o solo lo que se pidió)
+    if (records.length == 1) return Reply(_details(entity, records.first, only: command.fields));
+
+    const limit = 15;
+    final lines = [
+      for (final record in records.take(limit))
+        command.fields.isEmpty
+            ? '• ${entity.titleOf(record)} (id ${entity.idOf(record)})'
+            : '• ${entity.titleOf(record)}: ${command.fields.map((name) => '$name ${record[name] ?? '—'}').join(', ')}',
+    ];
+    final more = records.length > limit ? '\n… y ${records.length - limit} más.' : '';
+    return Reply('${records.length} ${entity.plural}:\n${lines.join('\n')}$more');
+  }
+
+  Reply _needsId(Entity entity, String verb) =>
+      Reply('Dime el id de ${entity.singular} que quieres $verb. Ejemplo: "$verb ${entity.singular} con id 12".', isError: true);
+
+  String _fieldNames(Entity entity) => entity.editable.map((field) => field.name).join(', ');
+
+  /// Un registro, campo por campo, sin contraseñas.
+  String _details(Entity entity, Json record, {List<String> only = const []}) {
+    final lines = <String>[];
+    for (final field in entity.fields) {
+      if (field.secret || !record.containsKey(field.name)) continue;
+      if (only.isNotEmpty && !only.contains(field.name)) continue;
+      lines.add('${field.name}: ${record[field.name] ?? '—'}');
+    }
+    return lines.isEmpty ? 'Sin datos.' : lines.join('\n');
+  }
+
+  /// Ejemplos con las entidades de este diagrama.
+  static String get help {
+    final entity = entities.first;
+    final field = entity.editable.isEmpty ? 'nombre' : entity.editable.first.name;
+    return 'Puedo registrar, buscar, actualizar y eliminar datos. Por ejemplo:\n'
+        '• Registra ${entity.singular} con $field …\n'
+        '• Lista ${entity.plural}\n'
+        '• Actualiza ${entity.singular} con id 1, $field …\n'
+        '• Elimina ${entity.singular} con id 1';
+  }
+}

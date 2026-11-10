@@ -1,0 +1,279 @@
+import 'package:flutter/material.dart';
+
+import '../api.dart';
+import '../schema.dart';
+
+/// Formulario para crear o editar un registro de cualquier entidad.
+/// Los controles salen del tipo de cada campo en schema.dart.
+class RecordForm extends StatefulWidget {
+  const RecordForm({super.key, required this.entity, this.record});
+
+  final Entity entity;
+
+  /// El registro a editar; null para crear uno nuevo.
+  final Json? record;
+
+  @override
+  State<RecordForm> createState() => _RecordFormState();
+}
+
+class _RecordFormState extends State<RecordForm> {
+  final _formKey = GlobalKey<FormState>();
+
+  /// Texto de los campos que se escriben (también fechas e ids sueltos).
+  final _texts = <String, TextEditingController>{};
+
+  /// Valor de los interruptores, del registro relacionado elegido y de las listas de ids.
+  final _values = <String, Object?>{};
+
+  /// Registros de las entidades relacionadas, para elegirlos por su nombre.
+  final _options = <String, List<Json>>{};
+
+  bool _saving = false;
+
+  Entity get entity => widget.entity;
+  bool get _editing => widget.record != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final record = widget.record ?? const <String, dynamic>{};
+    for (final field in entity.editable) {
+      final value = record[field.name];
+      if (field.type == 'bool') {
+        _values[field.name] = value == true;
+      } else if (field.type == 'ids') {
+        _values[field.name] = <String>{
+          if (value is List) for (final id in value) '$id',
+        };
+        _texts[field.name] = TextEditingController(text: value is List ? value.join(', ') : '');
+      } else {
+        if (field.ref != null) _values[field.name] = value == null ? null : '$value';
+        var text = value == null ? '' : '$value';
+        if (field.type == 'date' && text.length > 10) text = text.substring(0, 10);
+        _texts[field.name] = TextEditingController(text: text);
+      }
+    }
+    _loadOptions();
+  }
+
+  @override
+  void dispose() {
+    for (final controller in _texts.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  /// Trae los registros de las entidades relacionadas. Si falla, el campo se
+  /// queda como texto y el id se escribe a mano.
+  Future<void> _loadOptions() async {
+    final related = <String>{
+      for (final field in entity.editable)
+        if (field.ref != null) field.ref!,
+    };
+    for (final name in related) {
+      final target = entityNamed(name);
+      if (target == null) continue;
+      try {
+        final rows = await Api.instance.list(target);
+        if (mounted) setState(() => _options[name] = rows);
+      } on ApiException {
+        // Sin opciones: se escribe el id
+      }
+    }
+  }
+
+  Future<void> _save() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    final data = <String, dynamic>{};
+    for (final field in entity.editable) {
+      final Object? value;
+      if (field.type == 'bool') {
+        value = _values[field.name];
+      } else if (field.type == 'ids' && _options[field.ref] != null) {
+        value = (_values[field.name] as Set<String>).toList();
+      } else if (field.ref != null && field.type != 'ids' && _options[field.ref] != null) {
+        value = _values[field.name];
+      } else {
+        value = field.parse(_texts[field.name]!.text);
+      }
+      // Un campo vacío no se envía: al editar, el backend conserva lo que tenía
+      if (value != null) data[field.name] = value;
+    }
+
+    setState(() => _saving = true);
+    try {
+      if (_editing) {
+        await Api.instance.update(entity, entity.idOf(widget.record!), data);
+      } else {
+        await Api.instance.create(entity, data);
+      }
+      if (mounted) Navigator.pop(context, true);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(_editing ? 'Editar ${entity.singular}' : 'Nuevo ${entity.singular}')),
+      body: Form(
+        key: _formKey,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            for (final field in entity.editable)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: _control(field),
+              ),
+            FilledButton.icon(
+              onPressed: _saving ? null : _save,
+              icon: const Icon(Icons.check),
+              label: Text(_saving ? 'Guardando…' : 'Guardar'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _control(Field field) {
+    final options = _options[field.ref];
+    if (field.type == 'bool') return _switch(field);
+    if (field.type == 'ids' && options != null) return _chips(field, options);
+    if (field.ref != null && field.type != 'ids' && options != null) return _dropdown(field, options);
+    if (field.type == 'date' || field.type == 'datetime') return _datePicker(field);
+    return _textField(field);
+  }
+
+  /// Al editar, una contraseña vacía significa «no cambiarla».
+  bool _isRequired(Field field) => field.required && !(field.secret && _editing);
+
+  String _label(Field field) => _isRequired(field) ? '${field.name} *' : field.name;
+
+  String? _validate(Field field, String? text) {
+    final value = (text ?? '').trim();
+    if (value.isEmpty) return _isRequired(field) ? 'Este campo es obligatorio' : null;
+    if (field.parse(value) == null) {
+      return field.type == 'int' ? 'Escribe un número entero' : 'Escribe un número';
+    }
+    return null;
+  }
+
+  Widget _textField(Field field) {
+    return TextFormField(
+      controller: _texts[field.name],
+      obscureText: field.secret,
+      keyboardType: field.isNumber
+          ? TextInputType.numberWithOptions(decimal: field.type == 'double', signed: true)
+          : TextInputType.text,
+      decoration: InputDecoration(
+        labelText: _label(field),
+        helperText: field.type == 'ids' ? 'Ids separados por comas' : null,
+      ),
+      validator: (text) => _validate(field, text),
+    );
+  }
+
+  Widget _switch(Field field) {
+    return SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      title: Text(field.name),
+      value: _values[field.name] == true,
+      onChanged: (value) => setState(() => _values[field.name] = value),
+    );
+  }
+
+  Widget _datePicker(Field field) {
+    final controller = _texts[field.name]!;
+    return TextFormField(
+      controller: controller,
+      readOnly: true,
+      decoration: InputDecoration(
+        labelText: _label(field),
+        suffixIcon: const Icon(Icons.calendar_today_outlined),
+      ),
+      validator: (text) => _validate(field, text),
+      onTap: () async {
+        final current = DateTime.tryParse(controller.text) ?? DateTime.now();
+        final date = await showDatePicker(
+          context: context,
+          initialDate: current,
+          firstDate: DateTime(1900),
+          lastDate: DateTime(2100),
+        );
+        if (date == null || !mounted) return;
+        var picked = date;
+        if (field.type == 'datetime') {
+          final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(current));
+          if (time == null) return;
+          picked = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+        }
+        // LocalDate viaja como yyyy-MM-dd; LocalDateTime, con la hora
+        final iso = picked.toIso8601String();
+        controller.text = field.type == 'date' ? iso.substring(0, 10) : iso.substring(0, 19);
+      },
+    );
+  }
+
+  /// Relación con un solo registro: se elige por su nombre y se guarda su id.
+  Widget _dropdown(Field field, List<Json> options) {
+    final target = entityNamed(field.ref)!;
+    final ids = [for (final option in options) target.idOf(option)];
+    final selected = ids.contains(_values[field.name]) ? _values[field.name] as String : null;
+    return FormField<String>(
+      initialValue: selected,
+      validator: (value) => value == null && _isRequired(field) ? 'Elige una opción' : null,
+      builder: (state) => InputDecorator(
+        decoration: InputDecoration(labelText: _label(field), errorText: state.errorText),
+        isEmpty: state.value == null,
+        child: DropdownButtonHideUnderline(
+          child: DropdownButton<String>(
+            value: state.value,
+            isExpanded: true,
+            isDense: true,
+            items: [
+              for (final option in options)
+                DropdownMenuItem(value: target.idOf(option), child: Text(target.titleOf(option))),
+            ],
+            onChanged: (value) {
+              state.didChange(value);
+              _values[field.name] = value;
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Relación con varios registros: se marcan los que correspondan.
+  Widget _chips(Field field, List<Json> options) {
+    final target = entityNamed(field.ref)!;
+    final selected = _values[field.name] as Set<String>;
+    return InputDecorator(
+      decoration: InputDecoration(labelText: field.name),
+      child: options.isEmpty
+          ? Text('No hay ${target.plural} todavía.')
+          : Wrap(
+              spacing: 8,
+              children: [
+                for (final option in options)
+                  FilterChip(
+                    label: Text(target.titleOf(option)),
+                    selected: selected.contains(target.idOf(option)),
+                    onSelected: (on) => setState(() {
+                      final id = target.idOf(option);
+                      on ? selected.add(id) : selected.remove(id);
+                    }),
+                  ),
+              ],
+            ),
+    );
+  }
+}
