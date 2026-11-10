@@ -1,12 +1,12 @@
 # 📱 {{projectName}} (Flutter Mobile App)
 
-Aplicación móvil desarrollada en **Flutter** con arquitectura limpia (**Clean Architecture**), patrón de gestión de estado **BLoC** (`flutter_bloc`), cliente HTTP **Dio**, inyección de dependencias con **GetIt** y **Asistente de IA Local Híbrido** (Ollama + On-Device NLP).
+Aplicación móvil desarrollada en **Flutter** con arquitectura limpia (**Clean Architecture**), patrón de gestión de estado **BLoC** (`flutter_bloc`), cliente HTTP **Dio**, inyección de dependencias con **GetIt** y **Asistente de IA Local** que corre dentro del teléfono (Qwen2.5 con llama.cpp + intérprete de reglas de respaldo).
 
 ---
 
 ## 🤖 Asistente de IA Local Integrado
 
-La aplicación incluye un **Bot conversacional inteligente** que permite interactuar con el backend mediante lenguaje natural sin necesidad de llenar formularios manualmente.
+La aplicación incluye un **Bot conversacional inteligente** que permite interactuar con el backend mediante lenguaje natural, por texto o por voz, sin necesidad de llenar formularios manualmente.
 
 ### 🌟 Capacidades del Asistente:
 1. **Registro / Creación Rápida:**
@@ -14,13 +14,21 @@ La aplicación incluye un **Bot conversacional inteligente** que permite interac
    - `"Crea un producto con nombre Laptop, precio 1200.50"`
 2. **Consultas y Listados:**
    - `"Listar usuarios"`
-   - `"Mostrar productos"`
-3. **Eliminación por ID:**
+   - `"Busca al usuario Jose"`
+   - `"Muestra el producto con id 123"`
+3. **Actualización por ID:**
+   - `"Actualiza el producto con id 123, precio 999"`
+4. **Eliminación por ID:**
    - `"Eliminar usuario con id 123"`
 
-### ⚡ Modo Híbrido (Ollama + On-Device NLP):
-* **Nivel 1 (Ollama Local):** Si tienes [Ollama](https://ollama.com) ejecutándose localmente con modelos como `llama3.2`, `qwen2.5` o `mistral` en `http://localhost:11434` (o `http://10.0.2.2:11434` en emulador Android), el bot utiliza el LLM para estructurar los datos. Puedes cambiar la URL y modelo en el botón ⚙️ de la pantalla de chat.
-* **Nivel 2 (Motor Local On-Device Fallback):** Si Ollama no está disponible o no hay red externa, se activa de forma transparente el **procesador semántico NLP nativo** directamente en tu dispositivo, interpretando acciones, entidades y campos al instante.
+El asistente ejecuta la orden directamente contra el backend: no pide confirmación antes de crear, actualizar o eliminar.
+
+### ⚡ Cómo interpreta las órdenes (todo dentro del dispositivo):
+* **Nivel 1 (Qwen2.5 On-Device):** el modelo `qwen2.5-0.5b-instruct` (GGUF, unos 400 MB) corre en el propio teléfono con `lib_llama_cpp` y convierte la frase en una acción estructurada. No viaja dentro de la app: se descarga desde Hugging Face la primera vez que se abre el asistente (hace falta conexión y espacio libre) y queda guardado para los siguientes usos. La pantalla del chat muestra el avance de la descarga y permite reintentarla.
+* **Nivel 2 (Intérprete de reglas de respaldo):** mientras el modelo se descarga, si la descarga falla o si el modelo no entiende la orden, se usa un intérprete determinista de frases en español que reconoce la acción, la entidad y los campos.
+
+### 🎙 Dictado por voz
+El botón del micrófono usa el reconocedor de voz del sistema (`speech_to_text`), en español si el teléfono lo tiene instalado. Requiere el permiso de micrófono; que funcione sin red depende del paquete de idioma del dispositivo.
 
 ---
 
