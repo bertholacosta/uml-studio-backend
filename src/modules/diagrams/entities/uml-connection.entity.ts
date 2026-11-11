@@ -44,6 +44,17 @@ export class UmlConnection {
   })
   targetMultiplicity: string;
 
+  /** Nombre de rol de cada extremo (se dibuja junto a su multiplicidad). */
+  @Column({ name: 'source_role', type: 'varchar', length: 100, nullable: true })
+  sourceRole: string | null;
+
+  @Column({ name: 'target_role', type: 'varchar', length: 100, nullable: true })
+  targetRole: string | null;
+
+  /** Navegabilidad: unspecified, to_target, to_source o both. */
+  @Column({ type: 'varchar', length: 20, default: 'unspecified' })
+  navigability: string;
+
   @Column({
     name: 'assoc_anchor_node_id',
     type: 'varchar',

@@ -205,7 +205,9 @@ describe('DiagramService', () => {
               name: 'Rol',
               positionX: 3,
               positionY: 4,
-              attributes: [{ name: 'id', type: 'UUID' }],
+              attributes: [
+                { name: 'id', type: 'UUID', visibility: 'protected' },
+              ],
               methods: [{ name: 'ok', returnType: 'void' }],
             },
           ],
@@ -217,6 +219,8 @@ describe('DiagramService', () => {
               sourceId: 'n1_right',
               targetId: 'n2_left',
               type: 'association',
+              targetRole: ' roles ',
+              navigability: 'to_target',
             },
           ],
         },
@@ -256,9 +260,27 @@ describe('DiagramService', () => {
         manager.insert.mock.calls.find(([e]) => e === entity)?.[1];
       expect(inserted(UmlNode)).toHaveLength(2);
       expect(inserted(UmlAttribute)).toEqual([
-        { nodeId: 'n1', name: 'id', type: 'UUID', orderIndex: 0 },
-        { nodeId: 'n1', name: 'email', type: 'String', orderIndex: 1 },
-        { nodeId: 'n2', name: 'id', type: 'UUID', orderIndex: 0 },
+        {
+          nodeId: 'n1',
+          name: 'id',
+          type: 'UUID',
+          visibility: 'private',
+          orderIndex: 0,
+        },
+        {
+          nodeId: 'n1',
+          name: 'email',
+          type: 'String',
+          visibility: 'private',
+          orderIndex: 1,
+        },
+        {
+          nodeId: 'n2',
+          name: 'id',
+          type: 'UUID',
+          visibility: 'protected',
+          orderIndex: 0,
+        },
       ]);
       expect(inserted(UmlMethod)).toEqual([
         {
@@ -266,6 +288,7 @@ describe('DiagramService', () => {
           name: 'ok',
           parameters: '',
           returnType: 'void',
+          visibility: 'public',
           orderIndex: 0,
         },
       ]);
@@ -273,6 +296,9 @@ describe('DiagramService', () => {
         id: 'c1',
         sourceMultiplicity: '1',
         targetMultiplicity: '0..*',
+        sourceRole: null,
+        targetRole: 'roles',
+        navigability: 'to_target',
       });
       expect(manager.insert).toHaveBeenCalledTimes(4);
     });

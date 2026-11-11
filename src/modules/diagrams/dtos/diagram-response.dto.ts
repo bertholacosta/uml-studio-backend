@@ -1,6 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Diagram } from '../entities/diagram.entity';
 import { UmlNodeDto, UmlConnectionDto } from './save-diagram-ast.dto';
+import {
+  DEFAULT_ATTRIBUTE_VISIBILITY,
+  DEFAULT_METHOD_VISIBILITY,
+} from '../uml-notation';
 
 export class DiagramResponseDto {
   @ApiProperty({ example: '3fa85f64-5717-4562-b3fc-2c963f66afa6' })
@@ -58,6 +62,7 @@ export class DiagramResponseDto {
         .map((a) => ({
           name: a.name,
           type: a.type,
+          visibility: a.visibility || DEFAULT_ATTRIBUTE_VISIBILITY,
           orderIndex: a.orderIndex,
         })),
       methods: (node.methods || [])
@@ -66,6 +71,7 @@ export class DiagramResponseDto {
           name: m.name,
           parameters: m.parameters,
           returnType: m.returnType,
+          visibility: m.visibility || DEFAULT_METHOD_VISIBILITY,
           orderIndex: m.orderIndex,
         })),
     }));
@@ -80,6 +86,9 @@ export class DiagramResponseDto {
       name: conn.name,
       sourceMultiplicity: conn.sourceMultiplicity || '1',
       targetMultiplicity: conn.targetMultiplicity || '0..*',
+      sourceRole: conn.sourceRole,
+      targetRole: conn.targetRole,
+      navigability: conn.navigability || 'unspecified',
       assocAnchorNodeId: conn.assocAnchorNodeId,
     }));
 

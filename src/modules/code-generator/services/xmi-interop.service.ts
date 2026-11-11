@@ -7,6 +7,13 @@ import { DiagramService } from '../../diagrams/services/diagram.service';
 import { SaveDiagramAstDto } from '../../diagrams/dtos/save-diagram-ast.dto';
 import { ProjectAccessService } from '../../projects/services/project-access.service';
 import { ImportXmiDto } from '../dtos/xmi-interop.dto';
+import {
+  DEFAULT_ATTRIBUTE_VISIBILITY,
+  DEFAULT_METHOD_VISIBILITY,
+  normalizeNavigability,
+  normalizeRole,
+  normalizeVisibility,
+} from '../../diagrams/uml-notation';
 
 @Injectable()
 export class XmiInteropService {
@@ -44,7 +51,7 @@ export class XmiInteropService {
         attributes: (n.attributes || []).map((a) => ({
           name: a.name,
           type: a.type,
-          visibility: 'private',
+          visibility: a.visibility || 'private',
           isPk:
             a.name.toLowerCase().endsWith('id') ||
             a.name.toLowerCase() === 'id',
@@ -54,7 +61,7 @@ export class XmiInteropService {
           name: m.name,
           returnType: m.returnType || 'void',
           parameters: m.parameters || '',
-          visibility: 'public',
+          visibility: m.visibility || 'public',
         })),
         isAnchor: n.isAnchor,
         assocMainConnId: n.assocMainConnId || undefined,
@@ -69,6 +76,9 @@ export class XmiInteropService {
         name: c.name || undefined,
         sourceMultiplicity: c.sourceMultiplicity || '',
         targetMultiplicity: c.targetMultiplicity || '',
+        sourceRole: c.sourceRole || undefined,
+        targetRole: c.targetRole || undefined,
+        navigability: c.navigability || 'unspecified',
         assocAnchorNodeId: c.assocAnchorNodeId || undefined,
       })),
     };
@@ -144,12 +154,20 @@ function toSaveDto(ast: DiagramAstData): SaveDiagramAstDto {
       attributes: (n.attributes || []).map((a, i) => ({
         name: a.name,
         type: a.type,
+        visibility: normalizeVisibility(
+          a.visibility,
+          DEFAULT_ATTRIBUTE_VISIBILITY,
+        ),
         orderIndex: i,
       })),
       methods: (n.methods || []).map((m, i) => ({
         name: m.name,
         parameters: m.parameters || '',
         returnType: m.returnType || 'void',
+        visibility: normalizeVisibility(
+          m.visibility,
+          DEFAULT_METHOD_VISIBILITY,
+        ),
         orderIndex: i,
       })),
       isAnchor: n.isAnchor || false,
@@ -165,6 +183,9 @@ function toSaveDto(ast: DiagramAstData): SaveDiagramAstDto {
       name: c.name || null,
       sourceMultiplicity: c.sourceMultiplicity || '1',
       targetMultiplicity: c.targetMultiplicity || '0..*',
+      sourceRole: normalizeRole(c.sourceRole) ?? null,
+      targetRole: normalizeRole(c.targetRole) ?? null,
+      navigability: normalizeNavigability(c.navigability),
       assocAnchorNodeId: c.assocAnchorNodeId || null,
     })),
   };

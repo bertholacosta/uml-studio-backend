@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { XMLParser } from 'fast-xml-parser';
 import {
+  EA_DIRECTIONS,
   DiagramAstData,
   UmlNodeData,
   UmlConnectionData,
@@ -336,6 +337,8 @@ export class XmiParserService {
 
     const end0 = listToUse[0];
     const end1 = listToUse[1];
+    let sourceEnd = end0;
+    let targetEnd = end1;
 
     const typeId0 = end0.type
       ? end0.type['@_xmi:idref'] ||
@@ -363,6 +366,8 @@ export class XmiParserService {
     } else if (id1.includes('src') || id0.includes('dst')) {
       sourceNodeId = typeId1;
       targetNodeId = typeId0;
+      sourceEnd = end1;
+      targetEnd = end0;
       sourceMultiplicity = this.extractMultiplicity(end1);
       targetMultiplicity = this.extractMultiplicity(end0);
       if (end1['@_aggregation'] && end1['@_aggregation'] !== 'none')
@@ -410,7 +415,36 @@ export class XmiParserService {
       name: name || undefined,
       sourceMultiplicity,
       targetMultiplicity,
+      sourceRole: sourceEnd['@_name'] || undefined,
+      targetRole: targetEnd['@_name'] || undefined,
+      navigability: this.navigabilityOf(assocElem, sourceEnd, targetEnd),
     };
+  }
+
+  /**
+   * Un extremo es navegable si la asociación lo declara en navigableOwnedEnd (o, en XMI
+   * antiguos, si lleva isNavigable="true").
+   */
+  private navigabilityOf(
+    assocElem: any,
+    sourceEnd: any,
+    targetEnd: any,
+  ): string {
+    const declared = assocElem['navigableOwnedEnd'];
+    const navigableIds = new Set(
+      (Array.isArray(declared) ? declared : declared ? [declared] : []).map(
+        (n: any) => n?.['@_xmi:idref'] || n?.['@_idref'],
+      ),
+    );
+    const isNavigable = (end: any) =>
+      navigableIds.has(end['@_xmi:id'] || end['@_id']) ||
+      String(end['@_isNavigable']) === 'true';
+    const toSource = isNavigable(sourceEnd);
+    const toTarget = isNavigable(targetEnd);
+    if (toSource && toTarget) return 'both';
+    if (toTarget) return 'to_target';
+    if (toSource) return 'to_source';
+    return 'unspecified';
   }
 
   private parseClassGeneralizations(
@@ -512,6 +546,11 @@ export class XmiParserService {
       const sMult = labels['@_lb'] || srcType['@_multiplicity'] || '';
       const tMult = labels['@_rb'] || tgtType['@_multiplicity'] || '';
       const name = labels['@_mb'] || undefined;
+      const direction = String(eaProps['@_direction'] || '');
+      const navigability =
+        Object.keys(EA_DIRECTIONS).find(
+          (key) => EA_DIRECTIONS[key] === direction,
+        ) || 'unspecified';
 
       conns.push({
         id,
@@ -523,6 +562,9 @@ export class XmiParserService {
         name,
         sourceMultiplicity: sMult,
         targetMultiplicity: tMult,
+        sourceRole: source['role']?.['@_name'] || undefined,
+        targetRole: target['role']?.['@_name'] || undefined,
+        navigability,
       });
     }
 

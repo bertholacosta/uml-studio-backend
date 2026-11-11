@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS public.uml_attributes (
     node_id VARCHAR(100) NOT NULL REFERENCES public.uml_nodes(id) ON DELETE CASCADE,
     name VARCHAR(150) NOT NULL,
     type VARCHAR(100) DEFAULT 'String' NOT NULL,
+    visibility VARCHAR(10) DEFAULT 'private' NOT NULL,
     order_index INTEGER DEFAULT 0 NOT NULL
 );
 
@@ -101,6 +102,7 @@ CREATE TABLE IF NOT EXISTS public.uml_methods (
     name VARCHAR(150) NOT NULL,
     parameters VARCHAR(255) DEFAULT '' NOT NULL,
     return_type VARCHAR(100) DEFAULT 'void' NOT NULL,
+    visibility VARCHAR(10) DEFAULT 'public' NOT NULL,
     order_index INTEGER DEFAULT 0 NOT NULL
 );
 
@@ -118,6 +120,9 @@ CREATE TABLE IF NOT EXISTS public.uml_connections (
     name VARCHAR(100),
     source_multiplicity VARCHAR(20) DEFAULT '1' NOT NULL,
     target_multiplicity VARCHAR(20) DEFAULT '0..*' NOT NULL,
+    source_role VARCHAR(100),
+    target_role VARCHAR(100),
+    navigability VARCHAR(20) DEFAULT 'unspecified' NOT NULL,
     assoc_anchor_node_id VARCHAR(100)
 );
 
@@ -138,6 +143,13 @@ CREATE INDEX IF NOT EXISTS idx_uml_connections_diagram_id ON public.uml_connecti
 DROP TABLE IF EXISTS public.session_participants;
 DROP TABLE IF EXISTS public.collaboration_sessions;
 ALTER TABLE public.diagrams DROP COLUMN IF EXISTS yjs_binary_state;
+
+-- Notación UML: visibilidad de atributos y métodos, roles y navegabilidad de las relaciones
+ALTER TABLE public.uml_attributes ADD COLUMN IF NOT EXISTS visibility VARCHAR(10) DEFAULT 'private' NOT NULL;
+ALTER TABLE public.uml_methods ADD COLUMN IF NOT EXISTS visibility VARCHAR(10) DEFAULT 'public' NOT NULL;
+ALTER TABLE public.uml_connections ADD COLUMN IF NOT EXISTS source_role VARCHAR(100);
+ALTER TABLE public.uml_connections ADD COLUMN IF NOT EXISTS target_role VARCHAR(100);
+ALTER TABLE public.uml_connections ADD COLUMN IF NOT EXISTS navigability VARCHAR(20) DEFAULT 'unspecified' NOT NULL;
 
 -- Los diagramas se borran con su proyecto (antes quedaban huérfanos con project_id NULL)
 DELETE FROM public.diagrams WHERE project_id IS NULL;

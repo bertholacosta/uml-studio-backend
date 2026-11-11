@@ -29,6 +29,10 @@ export class UmlMethod {
   })
   returnType: string;
 
+  /** Visibilidad UML: public (+), private (−), protected (#) o package (~). */
+  @Column({ type: 'varchar', length: 10, default: 'public' })
+  visibility: string;
+
   @Column({ name: 'order_index', type: 'int', default: 0 })
   orderIndex: number;
 

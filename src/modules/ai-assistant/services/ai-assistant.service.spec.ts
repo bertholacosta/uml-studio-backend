@@ -792,8 +792,8 @@ describe('AiAssistantService', () => {
       expect(assocNode).toBeDefined();
       expect(assocNode?.assocMainConnId).toBe('conn_mn');
       expect(assocNode?.attributes).toEqual([
-        { name: 'estudianteId', type: 'UUID' },
-        { name: 'cursoId', type: 'UUID' },
+        { name: 'estudianteId', type: 'UUID', visibility: 'private' },
+        { name: 'cursoId', type: 'UUID', visibility: 'private' },
       ]);
       expect(assocNode?.attributes.map((a) => a.name)).not.toContain('id');
       expect(assocNode?.attributes.map((a) => a.name)).not.toContain(
