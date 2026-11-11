@@ -27,20 +27,26 @@ describe('OllamaProvider', () => {
     global.fetch = fetchMock as unknown as typeof fetch;
   });
 
-  it('sin onDelta pide la respuesta completa, con la ventana de contexto de trazo', async () => {
+  it('sin onDelta también usa streaming (evita cortes de túneles) y junta el texto completo', async () => {
     fetchMock.mockResolvedValueOnce(
-      new Response(
+      ndjson([
         JSON.stringify({
           model: 'trazo',
-          message: { content: '{"reply":"hola"}' },
+          message: { content: '{"reply":' },
+          done: false,
+        }) + '\n',
+        JSON.stringify({
+          model: 'trazo',
+          message: { content: '"hola"}' },
+          done: true,
           eval_count: 5,
-        }),
-      ),
+        }) + '\n',
+      ]),
     );
     const result = await new OllamaProvider(config()).generate(request);
 
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(body).toMatchObject({ stream: false, options: { num_ctx: 8192 } });
+    expect(body).toMatchObject({ stream: true, options: { num_ctx: 8192 } });
     expect(result).toMatchObject({ text: '{"reply":"hola"}', model: 'trazo' });
   });
 

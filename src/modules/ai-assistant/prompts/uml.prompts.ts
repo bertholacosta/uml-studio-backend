@@ -113,6 +113,7 @@ REGLA ESTRICTA DE ATRIBUTOS PARA LA TABLA ASOCIATIVA INTERMEDIA:
 - NUNCA inventes atributos adicionales que no existan en la imagen (como quantity, cantidad, fechaRegistro, etc.).
 - MANTÉN INTACTAS TODAS LAS DEMÁS TABLAS Y RELACIONES DEL DIAGRAMA.
 5. Asigna posiciones (x, y) ordenadas y separadas en una cuadrícula clara.
+6. MULTIPLICIDADES: en cada línea que une dos clases, lee el número o símbolo junto a CADA extremo. Un "1" es uno; un "*" (o "0..*", "1..*", "N") es muchos. Cada extremo de la línea tiene su propia multiplicidad: no asumas que ambos son "1". Asigna cada valor al extremo (clase) al que está pegado: sourceMultiplicity a la clase origen y targetMultiplicity a la clase destino. En un esquema de claves foráneas, el lado "muchos" es la tabla que contiene la FK.
 `;
 
 /** Diagrama en texto compacto para el modelo: una línea por clase y por relación. */

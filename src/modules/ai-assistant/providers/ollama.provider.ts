@@ -103,8 +103,9 @@ export class OllamaProvider implements AiProvider {
 
     const body = {
       model,
-      // En streaming Ollama envía una línea JSON por cada trozo de texto
-      stream: !!request.onDelta,
+      // Siempre en streaming (una línea JSON por trozo): así los túneles como Cloudflare no
+      // cortan las respuestas largas (error 524 tras ~100 s sin recibir datos)
+      stream: true,
       keep_alive: this.keepAlive,
       messages: [
         { role: 'system', content: request.systemInstruction },
@@ -150,8 +151,13 @@ export class OllamaProvider implements AiProvider {
       );
     }
 
-    if (response.ok && request.onDelta && response.body) {
-      return this.readStream(response.body, model, started, request.onDelta);
+    if (response.ok && response.body) {
+      return this.readStream(
+        response.body,
+        model,
+        started,
+        request.onDelta ?? (() => undefined),
+      );
     }
 
     const data = (await response
