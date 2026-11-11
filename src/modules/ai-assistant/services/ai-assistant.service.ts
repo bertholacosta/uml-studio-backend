@@ -89,6 +89,7 @@ import {
   parseModelJson,
   sanitizeConnections,
   sanitizeNodes,
+  withFreshIds,
   withPositions,
 } from '../domain/diagram-sanitizer';
 import {
@@ -858,6 +859,7 @@ export class AiAssistantService {
         const { nodes, connections } = this.finalize(
           edited.nodes,
           edited.connections,
+          { nodes: currentNodes, connections: currentConnections },
         );
         draft.phase('applying');
         await this.retireProposal(quotedProposal);
@@ -1080,7 +1082,7 @@ export class AiAssistantService {
       operations as DiagramOperation[],
     );
     return {
-      ...this.finalize(result.nodes, result.connections),
+      ...this.finalize(result.nodes, result.connections, current),
       skipped: result.skipped,
     };
   }
@@ -1421,8 +1423,13 @@ export class AiAssistantService {
           };
         }
 
-        const nodes = sanitizeNodes(extracted.nodes);
-        const connections = sanitizeConnections(extracted.connections, nodes);
+        const sanitized = sanitizeNodes(extracted.nodes);
+        // Ids nuevos para lo leído en la imagen: los del modelo («node_Cliente») se repiten
+        const { nodes, connections } = withFreshIds(
+          sanitized,
+          sanitizeConnections(extracted.connections, sanitized),
+          current,
+        );
         await this.saveCanvas(dto.diagramId, nodes, connections, user);
         this.collaborationGateway.broadcastAiMutation(
           dto.diagramId,
@@ -1902,14 +1909,24 @@ export class AiAssistantService {
     );
   }
 
-  /** Resuelve las relaciones M:N y sanea el diagrama resultante. */
-  private finalize(nodes: UmlClassNode[], connections: UmlConnection[]) {
+  /**
+   * Resuelve las relaciones M:N y sanea el diagrama resultante. Con `existing`, todo lo que no
+   * está ya en el diagrama recibe ids nuevos (los del modelo pueden repetirse entre diagramas).
+   */
+  private finalize(
+    nodes: UmlClassNode[],
+    connections: UmlConnection[],
+    existing?: { nodes: UmlClassNode[]; connections: UmlConnection[] },
+  ) {
     const resolved = resolveManyToManyRelationships(nodes, connections);
     const finalNodes = sanitizeNodes(resolved.nodes);
-    return {
+    const result = {
       nodes: finalNodes,
       connections: sanitizeConnections(resolved.connections, finalNodes),
     };
+    return existing
+      ? withFreshIds(result.nodes, result.connections, existing)
+      : result;
   }
 
   private authorOf(user: ChatUser): ChatAuthor {
