@@ -38,10 +38,17 @@ import {
   AiProviderUnavailableError,
   AiTurn,
 } from '../providers/ai-provider';
+import { buildVisionPrompt } from '../prompts/uml.prompts';
 import {
-  UML_VISION_INSTRUCTION,
-  buildVisionPrompt,
-} from '../prompts/uml.prompts';
+  DashedLineQuestion,
+  VISION_DESCRIPTION_INSTRUCTION,
+  VISION_DESCRIPTION_SCHEMA,
+  VisionDescription,
+  applyDashedLineAnswers,
+  dashedLineQuestions,
+  diagramFromDescription,
+  isVisionDescription,
+} from '../domain/vision-description';
 import {
   MENTOR_RESPONSE_SCHEMA,
   SUMMARY_INSTRUCTION,
@@ -1396,16 +1403,25 @@ export class AiAssistantService {
       const diagramName = (await this.access.getDiagramContext(dto.diagramId))
         .diagramName;
       try {
+        // El modelo solo describe lo dibujado; el diagrama de la app lo construye el código
         const generated = await this.vision.generate({
-          systemInstruction: UML_VISION_INSTRUCTION,
+          systemInstruction: VISION_DESCRIPTION_INSTRUCTION,
           parts: [image, { text: buildVisionPrompt(dto.prompt) }],
           json: true,
+          schema: VISION_DESCRIPTION_SCHEMA,
         });
         const parsed = parseModelJson(generated.text);
+        // Compatibilidad: un proveedor que devuelva el AST de la app («nodes») sigue sirviendo
+        const read = isVisionDescription(parsed)
+          ? diagramFromDescription(await this.resolveDashedLines(parsed, image))
+          : {
+              nodes: withPositions(parsed.nodes),
+              connections: parsed.connections || [],
+            };
 
         let extracted = resolveManyToManyRelationships(
-          withPositions(parsed.nodes),
-          parsed.connections || [],
+          read.nodes,
+          read.connections,
         );
         if (
           current.nodes.length > 0 &&
@@ -1483,6 +1499,35 @@ export class AiAssistantService {
       }
     });
     return { message: this.conversations.toDto(userMessage), result };
+  }
+
+  /**
+   * Por cada línea discontinua, una pregunta cerrada al modelo de visión: ¿es una clase de
+   * asociación y a qué línea llega? Una pregunta que falla no estropea la digitalización.
+   */
+  private async resolveDashedLines(
+    description: VisionDescription,
+    image: AiPart,
+  ): Promise<VisionDescription> {
+    const questions = dashedLineQuestions(description).slice(0, 4);
+    const answers: { question: DashedLineQuestion; answer: any }[] = [];
+    for (const question of questions) {
+      try {
+        const reply = await this.vision.generate({
+          systemInstruction: question.systemInstruction,
+          parts: [image, { text: question.text }],
+          json: true,
+          schema: question.schema,
+          temperature: 0.1,
+        });
+        answers.push({ question, answer: parseModelJson(reply.text) });
+      } catch (err: any) {
+        this.logger.warn(
+          `No se pudo resolver una línea discontinua: ${err?.message || err}`,
+        );
+      }
+    }
+    return applyDashedLineAnswers(description, answers);
   }
 
   async processVisionDiagram(

@@ -106,14 +106,18 @@ REGLA DE EXHAUSTIVIDAD TOTAL Y COMPLETITUD DEL DIAGRAMA:
 1. DEBES EXTRAER EL 100% DE TODAS LAS TABLAS/CLASES PRESENTES EN LA IMAGEN SIN EXCEPCIÓN (recorre minuciosamente toda la imagen: izquierda, centro, derecha, arriba y abajo).
 2. Si la imagen contiene múltiples tablas (ej: Customer, Order, Delivery, Products, Categories), TODAS ellas deben figurar obligatoriamente en "nodes", junto con todas sus conexiones y multiplicidades originales (ej: Customer a Order, Delivery a Order, Categories a Products).
 3. NUNCA filtres, recortes ni omitas tablas o relaciones visibles en la imagen, aunque el usuario pregunte o pida enfocarse en una relación específica (como M:N o tabla asociativa).
-4. RESOLUCIÓN DE RELACIONES MUCHOS A MUCHOS (M:N): Si detectas una relación muchos a muchos (* a *, 0..* a 0..*, etc.) directa entre dos clases de la imagen (ej: Order y Products), genera la tabla asociativa intermedia (ej: OrderProduct) con su nodo ancla virtual ("isAnchor": true, "width": 0, "height": 0) y conector «link» tipo association_class.
-REGLA ESTRICTA DE ATRIBUTOS PARA LA TABLA ASOCIATIVA INTERMEDIA:
+4. RESOLUCIÓN DE RELACIONES MUCHOS A MUCHOS (M:N): Si detectas una relación muchos a muchos (* a *, 0..* a 0..*, etc.) directa entre dos clases de la imagen (ej: Order y Products) SIN una clase de asociación dibujada (ver regla 7), genera la tabla asociativa intermedia (ej: OrderProduct) con su nodo ancla virtual ("isAnchor": true, "width": 0, "height": 0) y conector «link» tipo association_class.
+REGLA ESTRICTA DE ATRIBUTOS PARA LA TABLA ASOCIATIVA INTERMEDIA QUE TÚ GENERAS (no dibujada en la imagen):
 - La tabla asociativa intermedia DEBE CONTENER ÚNICAMENTE los 2 atributos de ID foráneos que actúan como su clave primaria compuesta (ej: orderId: UUID, productId: UUID).
 - NUNCA generes un atributo "id" artificial.
 - NUNCA inventes atributos adicionales que no existan en la imagen (como quantity, cantidad, fechaRegistro, etc.).
 - MANTÉN INTACTAS TODAS LAS DEMÁS TABLAS Y RELACIONES DEL DIAGRAMA.
 5. Asigna posiciones (x, y) ordenadas y separadas en una cuadrícula clara.
 6. MULTIPLICIDADES: en cada línea que une dos clases, lee el número o símbolo junto a CADA extremo. Un "1" es uno; un "*" (o "0..*", "1..*", "N") es muchos. Cada extremo de la línea tiene su propia multiplicidad: no asumas que ambos son "1". Asigna cada valor al extremo (clase) al que está pegado: sourceMultiplicity a la clase origen y targetMultiplicity a la clase destino. En un esquema de claves foráneas, el lado "muchos" es la tabla que contiene la FK.
+7. CLASES DE ASOCIACIÓN DIBUJADAS: si una clase C está unida con una línea DISCONTINUA o punteada (- - -) al MEDIO de la línea que une otras dos clases A y B, C es la CLASE DE ASOCIACIÓN de la relación A–B. En ese caso:
+   - NO crees conexiones directas entre C y A ni entre C y B: C solo se une al ancla.
+   - Genera la estructura de 4 partes de la regla 5: conexión principal A–B (con las multiplicidades dibujadas en sus extremos; si no se leen, "*" y "*") con "assocAnchorNodeId"; nodo ancla ("isAnchor": true) en el punto medio; la clase C con "assocMainConnId" igual al id de la conexión principal; y la conexión «link» de tipo "association_class" del ancla a C.
+   - C CONSERVA su nombre y los atributos dibujados en la imagen (no la reduzcas a dos claves foráneas).
 `;
 
 /** Diagrama en texto compacto para el modelo: una línea por clase y por relación. */
