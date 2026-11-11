@@ -19,7 +19,8 @@ import {
 const DEFAULT_MODEL = 'qwen.qwen3-32b-v1:0';
 const DEFAULT_REGION = 'us-east-1';
 const DEFAULT_TIMEOUT_MS = 120_000;
-const MAX_OUTPUT_TOKENS = 2048;
+// Un esquema de varias tablas en JSON supera con facilidad los 2048 tokens
+const MAX_OUTPUT_TOKENS = 4096;
 // Bedrock saturado o el modelo todavía cargando: conviene reintentar más tarde
 const TRANSIENT_ERRORS = new Set([
   'ThrottlingException',
@@ -40,6 +41,8 @@ export class BedrockProvider implements AiProvider {
   private readonly logger = new Logger(BedrockProvider.name);
   private readonly client: BedrockRuntimeClient;
   private readonly model: string;
+  private readonly visionModel?: string;
+  private readonly maxTokens: number;
   private readonly selectable: string[];
   private readonly timeoutMs: number;
 
@@ -49,6 +52,10 @@ export class BedrockProvider implements AiProvider {
       config.get<string>('AWS_REGION') ||
       DEFAULT_REGION;
     this.model = config.get<string>('BEDROCK_MODEL_ID') || DEFAULT_MODEL;
+    this.visionModel =
+      config.get<string>('BEDROCK_VISION_MODEL_ID') || undefined;
+    this.maxTokens =
+      Number(config.get<string>('BEDROCK_MAX_TOKENS')) || MAX_OUTPUT_TOKENS;
     this.selectable = selectableModels(config, this.model);
     this.timeoutMs =
       Number(config.get<string>('AI_TIMEOUT_MS')) || DEFAULT_TIMEOUT_MS;
@@ -62,10 +69,14 @@ export class BedrockProvider implements AiProvider {
   }
 
   async generate(request: AiGenerateRequest): Promise<AiGenerateResult> {
+    const hasImage = request.parts.some((part) => 'inlineData' in part);
+    // Con imagen se usa el modelo de visión (si lo hay): el de texto puede no leer imágenes
     const model =
       request.model && this.selectable.includes(request.model)
         ? request.model
-        : this.model;
+        : hasImage && this.visionModel
+          ? this.visionModel
+          : this.model;
     const content = request.parts.map((part): ContentBlock => {
       if ('text' in part) return { text: part.text };
       return {
@@ -90,7 +101,7 @@ export class BedrockProvider implements AiProvider {
       messages,
       inferenceConfig: {
         temperature: temperatureOf(request),
-        maxTokens: MAX_OUTPUT_TOKENS,
+        maxTokens: this.maxTokens,
       },
     };
     const options = { abortSignal: AbortSignal.timeout(this.timeoutMs) };

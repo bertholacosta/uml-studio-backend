@@ -21,6 +21,10 @@ export class UmlAttribute {
   @Column({ type: 'varchar', length: 100, default: 'String' })
   type: string;
 
+  /** Visibilidad UML: public (+), private (−), protected (#) o package (~). */
+  @Column({ type: 'varchar', length: 10, default: 'private' })
+  visibility: string;
+
   @Column({ name: 'order_index', type: 'int', default: 0 })
   orderIndex: number;
 

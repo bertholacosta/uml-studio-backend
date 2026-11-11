@@ -220,6 +220,84 @@ describe('applyOperations', () => {
     expect(resolved.nodes.some((n) => n.isAnchor)).toBe(true);
   });
 
+  it('relaciona una clase consigo misma si el modelo la nombra en los dos extremos', () => {
+    const result = applyOperations(
+      [node('e', 'Empleado', ['id'])],
+      [],
+      [
+        {
+          op: 'add_relation',
+          source: 'Empleado',
+          target: 'Empleado',
+          name: 'supervisa',
+          sourceMultiplicity: '0..1',
+          targetMultiplicity: '*',
+        },
+      ],
+    );
+
+    expect(result.skipped).toEqual([]);
+    expect(result.connections).toHaveLength(1);
+    expect(result.connections[0]).toMatchObject({
+      sourceNodeId: 'e',
+      targetNodeId: 'e',
+      sourceId: 'e_top',
+      targetId: 'e_right',
+      type: 'association',
+      name: 'supervisa',
+    });
+    // Una autoasociación M:N no genera tabla intermedia
+    const self = { ...result.connections[0], sourceMultiplicity: '*' };
+    expect(
+      resolveManyToManyRelationships(result.nodes, [self]).nodes,
+    ).toHaveLength(1);
+  });
+
+  it('descarta la herencia de una clase consigo misma', () => {
+    const result = applyOperations(
+      [node('p', 'Pedido', ['id'])],
+      [],
+      [
+        {
+          op: 'add_relation',
+          source: 'Pedido',
+          target: 'Pedido',
+          type: 'generalization',
+        },
+      ],
+    );
+
+    expect(result.connections).toEqual([]);
+    expect(result.skipped).toHaveLength(1);
+  });
+
+  it('al reemplazar los atributos cada uno conserva su visibilidad', () => {
+    const cliente = node('c', 'Cliente');
+    cliente.attributes = [
+      { name: 'id', type: 'UUID', visibility: 'private' },
+      { name: 'email', type: 'String', visibility: 'public' },
+    ];
+    const result = applyOperations(
+      [cliente],
+      [],
+      [
+        {
+          op: 'update_class',
+          target: 'Cliente',
+          attributes: [
+            { name: 'email', type: 'Text' },
+            { name: 'telefono', type: 'String' },
+          ],
+        },
+      ],
+    );
+
+    expect(result.nodes[0].attributes).toEqual([
+      { name: 'email', type: 'Text', visibility: 'public' },
+      { name: 'telefono', type: 'String' },
+    ]);
+  });
+
   it('registra las operaciones sobre clases inexistentes sin romper el resto', () => {
     const res = applyOperations(
       [node('a', 'Alumno')],

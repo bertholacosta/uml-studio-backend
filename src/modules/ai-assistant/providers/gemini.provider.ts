@@ -12,6 +12,7 @@ import {
 
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 const DEFAULT_TIMEOUT_MS = 45_000;
+const VISION_MIN_TIMEOUT_MS = 90_000;
 const MAX_ATTEMPTS = 3;
 // Errores transitorios de Gemini: límite de cuota, error interno, saturación y timeout del servidor
 const RETRYABLE_STATUS = new Set([429, 500, 503, 504]);
@@ -85,8 +86,16 @@ export class GeminiProvider implements AiProvider {
     const models = chosen
       ? [chosen, ...this.chain.filter((m) => m !== chosen)]
       : this.chain;
-    for (const model of models) {
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    // Con imagen la respuesta tarda más: se amplía el plazo por intento
+    const hasImage = request.parts.some((p) => 'inlineData' in p);
+    const timeoutMs = hasImage
+      ? Math.max(this.timeoutMs, VISION_MIN_TIMEOUT_MS)
+      : this.timeoutMs;
+    for (const [index, model] of models.entries()) {
+      // Si queda otro modelo, un modelo saturado se abandona de inmediato en vez de reintentarlo
+      const isLast = index === models.length - 1;
+      const maxAttempts = isLast ? MAX_ATTEMPTS : 1;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
           const started = Date.now();
           const params = {
@@ -96,7 +105,7 @@ export class GeminiProvider implements AiProvider {
               systemInstruction: request.systemInstruction,
               temperature: temperatureOf(request),
               ...(request.json ? { responseMimeType: 'application/json' } : {}),
-              abortSignal: AbortSignal.timeout(this.timeoutMs),
+              abortSignal: AbortSignal.timeout(timeoutMs),
             },
           };
           const response = request.onDelta
@@ -119,11 +128,11 @@ export class GeminiProvider implements AiProvider {
             throw error;
           }
           this.logger.warn(
-            `${model} no disponible (intento ${attempt}/${MAX_ATTEMPTS}): ${this.describe(error)}`,
+            `${model} no disponible (intento ${attempt}/${maxAttempts}): ${this.describe(error)}`,
           );
           // Un timeout ya consumió todo el plazo: no se repite con el mismo modelo
           if (this.isTimeout(error)) break;
-          if (attempt < MAX_ATTEMPTS) {
+          if (attempt < maxAttempts) {
             await sleep(1000 * 2 ** (attempt - 1) + Math.random() * 300);
           }
         }

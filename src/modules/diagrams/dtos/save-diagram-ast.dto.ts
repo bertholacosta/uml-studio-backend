@@ -2,15 +2,22 @@ import {
   ArrayMaxSize,
   IsArray,
   IsBoolean,
+  IsIn,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
+  MaxLength,
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  MAX_ROLE_LENGTH,
+  UML_NAVIGABILITIES,
+  UML_VISIBILITIES,
+} from '../uml-notation';
 
 // Topes de tamaño de un diagrama: muy por encima del uso normal, evitan cargas abusivas
 export const MAX_NODES = 500;
@@ -27,6 +34,11 @@ export class UmlAttributeDto {
   @IsString()
   @IsNotEmpty()
   type: string;
+
+  @ApiPropertyOptional({ enum: UML_VISIBILITIES, default: 'private' })
+  @IsOptional()
+  @IsIn(UML_VISIBILITIES)
+  visibility?: string;
 
   @ApiPropertyOptional({ example: 0 })
   @IsOptional()
@@ -49,6 +61,11 @@ export class UmlMethodDto {
   @IsString()
   @IsNotEmpty()
   returnType: string;
+
+  @ApiPropertyOptional({ enum: UML_VISIBILITIES, default: 'public' })
+  @IsOptional()
+  @IsIn(UML_VISIBILITIES)
+  visibility?: string;
 
   @ApiPropertyOptional({ example: 0 })
   @IsOptional()
@@ -158,6 +175,23 @@ export class UmlConnectionDto {
   @IsOptional()
   @IsString()
   targetMultiplicity?: string = '0..*';
+
+  @ApiPropertyOptional({ example: 'jefe' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(MAX_ROLE_LENGTH)
+  sourceRole?: string | null;
+
+  @ApiPropertyOptional({ example: 'subordinados' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(MAX_ROLE_LENGTH)
+  targetRole?: string | null;
+
+  @ApiPropertyOptional({ enum: UML_NAVIGABILITIES, default: 'unspecified' })
+  @IsOptional()
+  @IsIn(UML_NAVIGABILITIES)
+  navigability?: string;
 
   @ApiPropertyOptional({ example: null })
   @IsOptional()

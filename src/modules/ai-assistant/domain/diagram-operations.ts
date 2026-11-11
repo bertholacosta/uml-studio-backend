@@ -80,6 +80,13 @@ export function dropUnrequestedOperations(
   });
 }
 
+/** Relaciones que no tienen sentido de una clase consigo misma. */
+const NO_SELF_RELATION = new Set([
+  'generalization',
+  'realization',
+  'association_class',
+]);
+
 const MANY_MULTIPLICITY = /^(?:\*|[01]\.\.\*|[nm]|\d+\.\.[nm*])$/i;
 const MANY_WORD =
   /\b(?:much[oa]s?|vari[oa]s?|m[uú]ltiples|many)\b(?:\s+(\p{L}[\p{L}\d_]*))?/giu;
@@ -224,7 +231,8 @@ export function applyOperations(
           break;
         }
         if (op.rename?.trim()) node.name = op.rename.trim();
-        if (Array.isArray(op.attributes)) node.attributes = [...op.attributes];
+        if (Array.isArray(op.attributes))
+          node.attributes = keepNotation(op.attributes, node.attributes);
         if (op.clearAttributes) node.attributes = [];
         removeMembers(node.attributes, op.removeAttributes);
         for (const change of op.updateAttributes || []) {
@@ -236,7 +244,8 @@ export function applyOperations(
           if (change.type) attr.type = change.type;
         }
         mergeMembers(node.attributes, op.addAttributes);
-        if (Array.isArray(op.methods)) node.methods = [...op.methods];
+        if (Array.isArray(op.methods))
+          node.methods = keepNotation(op.methods, node.methods);
         if (op.clearMethods) node.methods = [];
         removeMembers(node.methods, op.removeMethods);
         mergeMembers(node.methods, op.addMethods);
@@ -254,7 +263,14 @@ export function applyOperations(
       case 'update_relation': {
         const source = findClass(op.source);
         const target = findClass(op.target);
-        if (!source || !target || source.id === target.id) {
+        // Una clase solo se relaciona consigo misma si el modelo la nombró igual en los dos
+        // extremos (no por un parecido de nombres) y nunca por herencia o realización
+        const isSelf = !!source && source.id === target?.id;
+        const selfAllowed =
+          isSelf &&
+          normalizeForFuzzy(op.source) === normalizeForFuzzy(op.target) &&
+          !NO_SELF_RELATION.has(op.type || '');
+        if (!source || !target || (isSelf && !selfAllowed)) {
           skipped.push(`${op.op} ${op.source} → ${op.target}`);
           break;
         }
@@ -267,8 +283,8 @@ export function applyOperations(
           id: uid('conn'),
           sourceNodeId: source.id,
           targetNodeId: target.id,
-          sourceId: `${source.id}_right`,
-          targetId: `${target.id}_left`,
+          sourceId: `${source.id}_${isSelf ? 'top' : 'right'}`,
+          targetId: `${target.id}_${isSelf ? 'right' : 'left'}`,
           type: 'association',
           sourceMultiplicity: '',
           targetMultiplicity: '',
@@ -338,6 +354,22 @@ function isMany(mult?: string): boolean {
     clean.includes('m') ||
     clean === 'many'
   );
+}
+
+/**
+ * Lista de miembros que reemplaza a la anterior: el modelo no conoce la visibilidad, así que
+ * cada miembro que ya existía conserva la suya.
+ */
+function keepNotation<T extends { name: string; visibility?: string }>(
+  next: T[],
+  previous: T[],
+): T[] {
+  return next.map((item) => {
+    const old = previous.find((m) => sameName(m.name, item?.name || ''));
+    return old?.visibility && !item.visibility
+      ? { ...item, visibility: old.visibility }
+      : { ...item };
+  });
 }
 
 /** Añade miembros nuevos; si ya existe uno con ese nombre, se actualiza. */

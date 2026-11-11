@@ -9,9 +9,15 @@ export interface DiffNode {
   id: string;
   name?: string | null;
   isAnchor?: boolean | null;
-  attributes?: { name: string; type?: string | null }[] | null;
+  attributes?:
+    { name: string; type?: string | null; visibility?: string | null }[] | null;
   methods?:
-    | { name: string; parameters?: string | null; returnType?: string | null }[]
+    | {
+        name: string;
+        parameters?: string | null;
+        returnType?: string | null;
+        visibility?: string | null;
+      }[]
     | null;
 }
 
@@ -25,6 +31,9 @@ export interface DiffConnection {
   name?: string | null;
   sourceMultiplicity?: string | null;
   targetMultiplicity?: string | null;
+  sourceRole?: string | null;
+  targetRole?: string | null;
+  navigability?: string | null;
 }
 
 export type FactKind = 'class' | 'attribute' | 'method' | 'relation';
@@ -73,11 +82,40 @@ const RELATION_NAMES: Record<string, string> = {
   dependency: 'dependencia',
 };
 
+const VISIBILITY_NAMES: Record<string, string> = {
+  public: 'público',
+  private: 'privado',
+  protected: 'protegido',
+  package: 'de paquete',
+};
+
 function endpoint(
   nodeId: string | null | undefined,
   connectorId: string | null | undefined,
 ): string {
   return nodeId || (connectorId || '').replace(SIDE_SUFFIX, '');
+}
+
+/** Navegabilidad indicada; «sin indicar» es lo mismo que no tener el dato. */
+function navigabilityOf(c: DiffConnection): string {
+  return c.navigability && c.navigability !== 'unspecified'
+    ? c.navigability
+    : '';
+}
+
+/**
+ * Visibilidad que se añade al valor comparado solo si no es la habitual (atributo privado,
+ * método público): así un diagrama sin ese dato vale lo mismo que antes.
+ */
+function visibilityMark(
+  visibility: string | null | undefined,
+  usual: string,
+): { value: string; display: string } {
+  if (!visibility || visibility === usual) return { value: '', display: '' };
+  return {
+    value: `|${visibility}`,
+    display: ` (${VISIBILITY_NAMES[visibility] || visibility})`,
+  };
 }
 
 function relationLabel(
@@ -86,10 +124,17 @@ function relationLabel(
   target: string,
 ): string {
   const type = RELATION_NAMES[c.type || ''] || c.type || 'relación';
-  const left = c.sourceMultiplicity ? `${c.sourceMultiplicity} ` : '';
-  const right = c.targetMultiplicity ? ` ${c.targetMultiplicity}` : '';
+  const end = (mult?: string | null, role?: string | null) =>
+    [mult, role].filter(Boolean).join(' ');
+  const sourceEnd = end(c.sourceMultiplicity, c.sourceRole);
+  const targetEnd = end(c.targetMultiplicity, c.targetRole);
+  const left = sourceEnd ? `${sourceEnd} ` : '';
+  const right = targetEnd ? ` ${targetEnd}` : '';
   const name = c.name ? ` «${c.name}»` : '';
-  return `${source} ${left}—${type}—${right} ${target}${name}`;
+  const nav = navigabilityOf(c);
+  const from = nav === 'to_source' || nav === 'both' ? '←' : '—';
+  const to = nav === 'to_target' || nav === 'both' ? '→' : '—';
+  return `${source} ${left}${from}${type}${to}${right} ${target}${name}`;
 }
 
 /** Los elementos de un diagrama con una clave estable cada uno. */
@@ -117,25 +162,27 @@ export function factsOf(
     });
     for (const a of n.attributes || []) {
       if (!a?.name?.trim()) continue;
+      const mark = visibilityMark(a.visibility, 'private');
       facts.set(`attribute:${n.id}:${a.name.trim()}`, {
         what: 'attribute',
         nodeId: n.id,
         className,
         name: a.name.trim(),
-        value: a.type || '',
-        display: a.type || '',
+        value: (a.type || '') + mark.value,
+        display: (a.type || '') + mark.display,
       });
     }
     for (const m of n.methods || []) {
       if (!m?.name?.trim()) continue;
       const signature = `${m.name.trim()}(${m.parameters || ''})`;
+      const mark = visibilityMark(m.visibility, 'public');
       facts.set(`method:${n.id}:${signature}`, {
         what: 'method',
         nodeId: n.id,
         className,
         name: signature,
-        value: m.returnType || 'void',
-        display: m.returnType || 'void',
+        value: (m.returnType || 'void') + mark.value,
+        display: (m.returnType || 'void') + mark.display,
       });
     }
   }
@@ -161,6 +208,10 @@ export function factsOf(
         c.sourceMultiplicity,
         c.targetMultiplicity,
         c.name,
+        // Solo si se indicaron: una relación sin estos datos vale lo mismo que antes
+        ...(c.sourceRole || c.targetRole || navigabilityOf(c)
+          ? [c.sourceRole, c.targetRole, navigabilityOf(c)]
+          : []),
       ].join('|'),
       display: label,
     });

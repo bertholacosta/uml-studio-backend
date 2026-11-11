@@ -38,6 +38,10 @@ export interface UmlConnectionData {
   name?: string;
   sourceMultiplicity?: string;
   targetMultiplicity?: string;
+  sourceRole?: string;
+  targetRole?: string;
+  /** unspecified | to_target | to_source | both */
+  navigability?: string;
   assocAnchorNodeId?: string;
 }
 
@@ -49,6 +53,13 @@ export interface DiagramAstData {
 
 // En Enterprise Architect el modo 1 es «Direct»: las relaciones se exportan como líneas rectas
 const EA_DIRECT_LINE_MODE = '1';
+
+/** Navegabilidad de la relación en el atributo «direction» de Enterprise Architect. */
+export const EA_DIRECTIONS: Record<string, string> = {
+  to_target: 'Source -> Destination',
+  to_source: 'Destination -> Source',
+  both: 'Bi-Directional',
+};
 
 @Injectable()
 export class XmiExporterService {
@@ -283,6 +294,14 @@ export class XmiExporterService {
       const sMult = conn.sourceMultiplicity || '';
       const tMult = conn.targetMultiplicity || '';
       const connName = conn.name || '';
+      const sRole = conn.sourceRole || '';
+      const tRole = conn.targetRole || '';
+      const toTarget =
+        conn.navigability === 'to_target' || conn.navigability === 'both';
+      const toSource =
+        conn.navigability === 'to_source' || conn.navigability === 'both';
+      const roleName = (role: string) =>
+        role ? ` name="${this.escapeXml(role)}"` : '';
 
       const eaRelType = this.mapToEaRelationshipType(conn.type);
       const aggregationType =
@@ -299,7 +318,14 @@ export class XmiExporterService {
 
         umlPackagedElements += `\t\t\t<packagedElement xmi:type="uml:Association" xmi:id="${connEaId}" name="${this.escapeXml(connName)}" visibility="public">\n`;
         umlPackagedElements += `\t\t\t\t<memberEnd xmi:idref="${dstPropId}"/>\n`;
-        umlPackagedElements += `\t\t\t\t<ownedEnd xmi:type="uml:Property" xmi:id="${dstPropId}" visibility="public" association="${connEaId}" aggregation="${aggregationType}">\n`;
+        // En UML un extremo es navegable si la asociación lo declara en navigableOwnedEnd
+        if (toTarget) {
+          umlPackagedElements += `\t\t\t\t<navigableOwnedEnd xmi:idref="${dstPropId}"/>\n`;
+        }
+        if (toSource) {
+          umlPackagedElements += `\t\t\t\t<navigableOwnedEnd xmi:idref="${srcPropId}"/>\n`;
+        }
+        umlPackagedElements += `\t\t\t\t<ownedEnd xmi:type="uml:Property" xmi:id="${dstPropId}"${roleName(tRole)} visibility="public" association="${connEaId}" aggregation="${aggregationType}">\n`;
         umlPackagedElements += `\t\t\t\t\t<type xmi:idref="${targetEaId}"/>\n`;
         if (tMult) {
           umlPackagedElements += this.buildMultiplicityXml(tMult);
@@ -307,7 +333,7 @@ export class XmiExporterService {
         umlPackagedElements += `\t\t\t\t</ownedEnd>\n`;
 
         umlPackagedElements += `\t\t\t\t<memberEnd xmi:idref="${srcPropId}"/>\n`;
-        umlPackagedElements += `\t\t\t\t<ownedEnd xmi:type="uml:Property" xmi:id="${srcPropId}" visibility="public" association="${connEaId}" aggregation="none">\n`;
+        umlPackagedElements += `\t\t\t\t<ownedEnd xmi:type="uml:Property" xmi:id="${srcPropId}"${roleName(sRole)} visibility="public" association="${connEaId}" aggregation="none">\n`;
         umlPackagedElements += `\t\t\t\t\t<type xmi:idref="${sourceEaId}"/>\n`;
         if (sMult) {
           umlPackagedElements += this.buildMultiplicityXml(sMult);
@@ -320,15 +346,15 @@ export class XmiExporterService {
       eaConnectorsXml += `\t\t\t<connector xmi:idref="${connEaId}">\n`;
       eaConnectorsXml += `\t\t\t\t<source xmi:idref="${sourceEaId}">\n`;
       eaConnectorsXml += `\t\t\t\t\t<model type="Class" name="${this.escapeXml(sName)}"/>\n`;
-      eaConnectorsXml += `\t\t\t\t\t<role visibility="Public" targetScope="instance"/>\n`;
+      eaConnectorsXml += `\t\t\t\t\t<role${roleName(sRole)} visibility="Public" targetScope="instance"/>\n`;
       eaConnectorsXml += `\t\t\t\t\t<type ${sMult ? `multiplicity="${this.escapeXml(sMult)}"` : ''} aggregation="${aggregationType}" containment="Unspecified"/>\n`;
       eaConnectorsXml += `\t\t\t\t</source>\n`;
       eaConnectorsXml += `\t\t\t\t<target xmi:idref="${targetEaId}">\n`;
       eaConnectorsXml += `\t\t\t\t\t<model type="Class" name="${this.escapeXml(tName)}"/>\n`;
-      eaConnectorsXml += `\t\t\t\t\t<role visibility="Public" targetScope="instance"/>\n`;
+      eaConnectorsXml += `\t\t\t\t\t<role${roleName(tRole)} visibility="Public" targetScope="instance"/>\n`;
       eaConnectorsXml += `\t\t\t\t\t<type ${tMult ? `multiplicity="${this.escapeXml(tMult)}"` : ''} aggregation="none" containment="Unspecified"/>\n`;
       eaConnectorsXml += `\t\t\t\t</target>\n`;
-      eaConnectorsXml += `\t\t\t\t<properties ea_type="${eaRelType}" direction="Unspecified"/>\n`;
+      eaConnectorsXml += `\t\t\t\t<properties ea_type="${eaRelType}" direction="${this.escapeXml(EA_DIRECTIONS[conn.navigability || ''] || 'Unspecified')}"/>\n`;
       eaConnectorsXml += `\t\t\t\t<appearance linemode="${EA_DIRECT_LINE_MODE}" linecolor="-1" linewidth="0" seqno="0" headStyle="0" lineStyle="0"/>\n`;
       eaConnectorsXml += `\t\t\t\t<labels ${sMult ? `lb="${this.escapeXml(sMult)}"` : ''} ${tMult ? `rb="${this.escapeXml(tMult)}"` : ''} ${connName ? `mb="${this.escapeXml(connName)}"` : ''}/>\n`;
       eaConnectorsXml += `\t\t\t</connector>\n`;

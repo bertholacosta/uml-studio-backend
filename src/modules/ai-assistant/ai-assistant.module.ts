@@ -12,6 +12,8 @@ import {
 import { GeminiProvider } from './providers/gemini.provider';
 import { OllamaProvider } from './providers/ollama.provider';
 import { BedrockProvider } from './providers/bedrock.provider';
+import { DeepSeekProvider } from './providers/deepseek.provider';
+import { RoutingProvider } from './providers/routing.provider';
 import {
   AiConversation,
   AiConversationSchema,
@@ -67,10 +69,15 @@ function providerName(
     {
       provide: AI_PROVIDER,
       inject: [ConfigService],
-      useFactory: (config: ConfigService) =>
-        new PROVIDERS[providerName(config.get('AI_PROVIDER'), 'ollama')](
-          config,
-        ),
+      useFactory: (config: ConfigService) => {
+        const main = new PROVIDERS[
+          providerName(config.get('AI_PROVIDER'), 'ollama')
+        ](config);
+        // Con DEEPSEEK_API_KEY, DeepSeek se suma como modelo elegible y como respaldo del principal
+        return DeepSeekProvider.isConfigured(config)
+          ? new RoutingProvider(main, [new DeepSeekProvider(config)])
+          : main;
+      },
     },
     {
       // Las imágenes pueden ir a otro proveedor (p. ej. Gemini) aunque el chat sea local

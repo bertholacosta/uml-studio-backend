@@ -13,6 +13,13 @@ import { CreateDiagramDto } from '../dtos/create-diagram.dto';
 import { UpdateDiagramDto } from '../dtos/update-diagram.dto';
 import { SaveDiagramAstDto } from '../dtos/save-diagram-ast.dto';
 import { DiagramResponseDto } from '../dtos/diagram-response.dto';
+import {
+  DEFAULT_ATTRIBUTE_VISIBILITY,
+  DEFAULT_METHOD_VISIBILITY,
+  normalizeNavigability,
+  normalizeRole,
+  normalizeVisibility,
+} from '../uml-notation';
 
 /** Quién cambió un diagrama, para el aviso al resto del proyecto y el registro de actividad. */
 export interface DiagramActor {
@@ -140,6 +147,10 @@ export class DiagramService implements OnModuleDestroy {
         nodeId: n.id,
         name: a.name,
         type: a.type,
+        visibility: normalizeVisibility(
+          a.visibility,
+          DEFAULT_ATTRIBUTE_VISIBILITY,
+        ),
         orderIndex: a.orderIndex ?? index,
       })),
     );
@@ -149,6 +160,10 @@ export class DiagramService implements OnModuleDestroy {
         name: m.name,
         parameters: m.parameters || '',
         returnType: m.returnType,
+        visibility: normalizeVisibility(
+          m.visibility,
+          DEFAULT_METHOD_VISIBILITY,
+        ),
         orderIndex: m.orderIndex ?? index,
       })),
     );
@@ -163,6 +178,9 @@ export class DiagramService implements OnModuleDestroy {
       name: c.name || null,
       sourceMultiplicity: c.sourceMultiplicity || '1',
       targetMultiplicity: c.targetMultiplicity || '0..*',
+      sourceRole: normalizeRole(c.sourceRole) ?? null,
+      targetRole: normalizeRole(c.targetRole) ?? null,
+      navigability: normalizeNavigability(c.navigability),
       assocAnchorNodeId: c.assocAnchorNodeId || null,
     }));
 

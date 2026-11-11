@@ -8,8 +8,13 @@ export interface UmlClassNode {
   isAnchor?: boolean;
   assocAnchorNodeId?: string;
   assocMainConnId?: string;
-  attributes: { name: string; type: string }[];
-  methods: { name: string; parameters: string; returnType: string }[];
+  attributes: { name: string; type: string; visibility?: string }[];
+  methods: {
+    name: string;
+    parameters: string;
+    returnType: string;
+    visibility?: string;
+  }[];
 }
 
 export interface UmlConnection {
@@ -22,5 +27,9 @@ export interface UmlConnection {
   name?: string;
   sourceMultiplicity?: string;
   targetMultiplicity?: string;
+  sourceRole?: string;
+  targetRole?: string;
+  /** unspecified | to_target | to_source | both */
+  navigability?: string;
   assocAnchorNodeId?: string;
 }

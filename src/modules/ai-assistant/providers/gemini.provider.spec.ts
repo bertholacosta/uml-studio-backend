@@ -67,7 +67,8 @@ describe('GeminiProvider', () => {
       text: '{}',
       model: 'lite',
     });
-    expect(generateContent).toHaveBeenCalledTimes(4);
+    // El saturado se abandona al primer fallo: 1 intento + 1 en el respaldo
+    expect(generateContent).toHaveBeenCalledTimes(2);
   });
 
   it('lanza AiProviderUnavailableError si ningún modelo responde', async () => {

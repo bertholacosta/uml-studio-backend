@@ -1,4 +1,12 @@
+import { randomUUID } from 'crypto';
 import { UmlClassNode, UmlConnection } from './uml-diagram.types';
+import {
+  DEFAULT_ATTRIBUTE_VISIBILITY,
+  DEFAULT_METHOD_VISIBILITY,
+  normalizeNavigability,
+  normalizeRole,
+  normalizeVisibility,
+} from '../../diagrams/uml-notation';
 
 /** Interpreta la respuesta JSON del modelo, tolerando bloques ```json. */
 export function parseModelJson(text: string): any {
@@ -71,7 +79,7 @@ export function sanitizeNodes(nodes: any[]): UmlClassNode[] {
   return nodes.map((node, index) => {
     // Deduplicar atributos por nombre
     const seenAttrs = new Set<string>();
-    const dedupedAttributes: { name: string; type: string }[] = [];
+    const dedupedAttributes: UmlClassNode['attributes'] = [];
     for (const attr of node.attributes || []) {
       const name = (attr.name || 'attr').trim();
       const lower = name.toLowerCase();
@@ -80,17 +88,17 @@ export function sanitizeNodes(nodes: any[]): UmlClassNode[] {
         dedupedAttributes.push({
           name,
           type: normalizeType(attr.type),
+          visibility: normalizeVisibility(
+            attr.visibility,
+            DEFAULT_ATTRIBUTE_VISIBILITY,
+          ),
         });
       }
     }
 
     // Deduplicar métodos por nombre + parámetros
     const seenMethods = new Set<string>();
-    const dedupedMethods: {
-      name: string;
-      parameters: string;
-      returnType: string;
-    }[] = [];
+    const dedupedMethods: UmlClassNode['methods'] = [];
     for (const m of node.methods || []) {
       const key =
         `${(m.name || 'operation').trim()}(${(m.parameters || '').trim()})`.toLowerCase();
@@ -100,6 +108,10 @@ export function sanitizeNodes(nodes: any[]): UmlClassNode[] {
           name: m.name || 'operation',
           parameters: m.parameters || '',
           returnType: m.returnType || 'void',
+          visibility: normalizeVisibility(
+            m.visibility,
+            DEFAULT_METHOD_VISIBILITY,
+          ),
         });
       }
     }
@@ -133,6 +145,57 @@ export function sanitizeNodes(nodes: any[]): UmlClassNode[] {
   });
 }
 
+const PORT_SIDE = /_(top|bottom|left|right)$/;
+
+/**
+ * Da un id nuevo y único a cada nodo o conexión que no exista ya en el diagrama, y actualiza
+ * todas sus referencias (puertos «<nodo>_left», anclas de clases de asociación, conexión
+ * principal). Los ids son únicos en toda la base de datos, no por diagrama: un id inventado
+ * por el modelo (p. ej. «node_Cliente») choca con el de otro diagrama y el guardado falla.
+ */
+export function withFreshIds(
+  nodes: UmlClassNode[],
+  connections: UmlConnection[],
+  existing: { nodes: UmlClassNode[]; connections: UmlConnection[] },
+): { nodes: UmlClassNode[]; connections: UmlConnection[] } {
+  const keepNodes = new Set(existing.nodes.map((n) => n.id));
+  const keepConns = new Set(existing.connections.map((c) => c.id));
+  const nodeIds = new Map<string, string>();
+  const connIds = new Map<string, string>();
+  for (const n of nodes) {
+    if (!keepNodes.has(n.id)) nodeIds.set(n.id, `node_${randomUUID()}`);
+  }
+  for (const c of connections) {
+    if (!keepConns.has(c.id)) connIds.set(c.id, `conn_${randomUUID()}`);
+  }
+
+  const node = (id?: string) => (id && nodeIds.get(id)) || id;
+  const conn = (id?: string) => (id && connIds.get(id)) || id;
+  const port = (id: string) => {
+    const base = id.replace(PORT_SIDE, '');
+    const side = id.slice(base.length);
+    return nodeIds.has(base) ? `${nodeIds.get(base)}${side}` : node(id)!;
+  };
+
+  return {
+    nodes: nodes.map((n) => ({
+      ...n,
+      id: node(n.id)!,
+      assocAnchorNodeId: node(n.assocAnchorNodeId),
+      assocMainConnId: conn(n.assocMainConnId),
+    })),
+    connections: connections.map((c) => ({
+      ...c,
+      id: conn(c.id)!,
+      sourceNodeId: node(c.sourceNodeId),
+      targetNodeId: node(c.targetNodeId),
+      sourceId: port(c.sourceId),
+      targetId: port(c.targetId),
+      assocAnchorNodeId: node(c.assocAnchorNodeId),
+    })),
+  };
+}
+
 /** Completa los campos de las conexiones y descarta las que apuntan a nodos inexistentes. */
 export function sanitizeConnections(
   connections: any[],
@@ -163,6 +226,9 @@ export function sanitizeConnections(
           conn.sourceMultiplicity || conn.sourceCardinality || '',
         targetMultiplicity:
           conn.targetMultiplicity || conn.targetCardinality || '',
+        sourceRole: normalizeRole(conn.sourceRole),
+        targetRole: normalizeRole(conn.targetRole),
+        navigability: normalizeNavigability(conn.navigability),
         assocAnchorNodeId: conn.assocAnchorNodeId || undefined,
       };
     })
