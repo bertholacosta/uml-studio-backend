@@ -30,6 +30,8 @@ import {
   ChatAcceptedDto,
   ConversationDto,
   ConversationQueryDto,
+  ExportConversationQueryDto,
+  ExportedChatDto,
   ReviewChangeDto,
   SendChatMessageDto,
 } from '../dtos/ai-chat.dto';
@@ -72,6 +74,29 @@ export class AiAssistantController {
       channel,
       user,
       query.limit,
+    );
+  }
+
+  @Get('chat/projects/:projectId/:channel/export')
+  @Throttle({ default: CHAT_LIMIT })
+  @ApiParam({ name: 'channel', enum: ChannelParam })
+  @ApiOperation({
+    summary:
+      'Exporta todo el historial del canal (también las conversaciones archivadas) en Markdown o JSON',
+  })
+  @ApiResponse({ status: 200, type: ExportedChatDto })
+  async exportConversation(
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('channel', channelParam) channel: ChatChannel,
+    @Query() query: ExportConversationQueryDto,
+    @CurrentUser() user: User,
+  ): Promise<ExportedChatDto> {
+    return this.aiAssistantService.exportConversation(
+      projectId,
+      channel,
+      user,
+      query.format,
+      query.timeZone,
     );
   }
 

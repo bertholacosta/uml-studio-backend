@@ -40,6 +40,11 @@ import {
 } from '../providers/ai-provider';
 import { buildVisionPrompt } from '../prompts/uml.prompts';
 import {
+  ChatExportFile,
+  ChatExportFormat,
+  buildChatExport,
+} from '../domain/chat-export';
+import {
   DashedLineQuestion,
   VISION_DESCRIPTION_INSTRUCTION,
   VISION_DESCRIPTION_SCHEMA,
@@ -341,6 +346,64 @@ export class AiAssistantService {
       messages,
       hasMore,
     );
+  }
+
+  /**
+   * Exporta todo el historial de un canal (la conversación actual y las archivadas). El canal
+   * del equipo lo exporta cualquier miembro; la conversación privada, solo su dueño.
+   */
+  async exportConversation(
+    projectId: string,
+    channel: ChatChannel,
+    user: ChatUser,
+    format: ChatExportFormat = 'md',
+    timeZone?: string,
+  ): Promise<ChatExportFile> {
+    await this.access.assertProjectAccess(projectId, user.id, 'read');
+    const ownerId = channel === 'direct' ? user.id : '';
+    const conversations = await this.conversations.history(
+      projectId,
+      channel,
+      ownerId,
+    );
+    const withMessages = await Promise.all(
+      conversations.map(async (c) => ({
+        id: c.id,
+        startedBy: c.startedBy,
+        createdAt: c.createdAt,
+        active: c.active,
+        messages: (await this.conversations.allMessages(c.id)).map((m) => ({
+          id: m.id,
+          role: m.role,
+          author: { userId: m.author.userId, userName: m.author.userName },
+          text: m.text,
+          createdAt: m.createdAt,
+          status: m.status,
+          intent: m.intent,
+          diagramName: m.diagramName,
+          changesSummary: m.changesSummary,
+          model: m.model,
+          latencyMs: m.latencyMs,
+          quote: m.quote
+            ? { authorName: m.quote.authorName, text: m.quote.text }
+            : undefined,
+          image: m.image,
+          proposal: m.proposal
+            ? { state: m.proposal.state, appliedBy: m.proposal.appliedBy }
+            : undefined,
+          review: m.review
+            ? { state: m.review.state, by: m.review.by }
+            : undefined,
+        })),
+      })),
+    );
+    return buildChatExport({
+      projectName: (await this.access.getProjectName(projectId)) || 'Proyecto',
+      channel,
+      conversations: withMessages,
+      format,
+      timeZone,
+    });
   }
 
   /**

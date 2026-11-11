@@ -217,6 +217,34 @@ export class ConversationQueryDto {
   limit?: number;
 }
 
+export class ExportConversationQueryDto {
+  @ApiPropertyOptional({ enum: ['md', 'json'], default: 'md' })
+  @IsOptional()
+  @IsIn(['md', 'json'])
+  format?: 'md' | 'json';
+
+  @ApiPropertyOptional({
+    description:
+      'Zona horaria para las fechas (p. ej. America/La_Paz); por defecto UTC',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  timeZone?: string;
+}
+
+/** Archivo exportado: el navegador lo descarga con este nombre y tipo. */
+export class ExportedChatDto {
+  @ApiProperty()
+  filename: string;
+
+  @ApiProperty()
+  mimeType: string;
+
+  @ApiProperty({ description: 'Contenido del archivo (Markdown o JSON)' })
+  content: string;
+}
+
 /** Diagrama que el navegador tiene abierto: Trazo lo usa si es el lienzo sobre el que trabaja. */
 export class OpenDiagramDto {
   @ApiPropertyOptional({

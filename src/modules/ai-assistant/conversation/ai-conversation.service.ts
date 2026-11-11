@@ -99,6 +99,23 @@ export class AiConversationService {
     });
   }
 
+  /** Todas las conversaciones de un canal (la actual y las archivadas), de la más antigua a la más reciente. */
+  async history(
+    projectId: string,
+    channel: ChatChannel,
+    ownerId: string,
+  ): Promise<AiConversationDocument[]> {
+    return this.conversations
+      .find({ projectId, channel, ownerId })
+      .sort({ createdAt: 1 })
+      .exec();
+  }
+
+  /** Todos los mensajes de una conversación, en orden. */
+  async allMessages(conversationId: string): Promise<AiMessageDocument[]> {
+    return this.messages.find({ conversationId }).sort({ _id: 1 }).exec();
+  }
+
   async findMessage(messageId: string): Promise<AiMessageDocument | null> {
     if (!/^[a-f0-9]{24}$/i.test(messageId)) return null;
     return this.messages.findById(messageId);
